@@ -197,22 +197,25 @@ st.markdown("---")
 with st.sidebar:
     st.header("⚙️ 설정")
     
+    # 자동 계산 모드 설정
+    auto_calculate = st.checkbox(
+        "🔄 자동 계산 모드",
+        value=False,
+        help="총 금액 또는 보유 수량 입력 시 자동으로 계산합니다."
+    )
+    
+    st.markdown("---")
+    
+    # 총 금액 입력 (자동 계산 모드일 때 on_change 추가)
     total_balance = st.number_input(
         "총 금액 (평가금 + 예수금)",
         min_value=0.0,
         value=10000.0,
         step=1000.0,
         format="%.2f",
-        help="보유하고 있는 총 자산 금액을 입력하세요."
-    )
-    
-    st.markdown("---")
-    
-    # 자동 계산 모드 설정
-    auto_calculate = st.checkbox(
-        "🔄 자동 계산 모드",
-        value=False,
-        help="보유 수량 입력 시 자동으로 계산합니다."
+        help="보유하고 있는 총 자산 금액을 입력하세요.",
+        key="total_balance_input",
+        on_change=lambda: st.session_state.update({'auto_calc_trigger': True}) if auto_calculate else None
     )
     
     st.markdown("---")
@@ -234,6 +237,7 @@ with st.sidebar:
     
     # 자동 계산 모드일 때 자동 계산
     if auto_calculate and total_balance > 0:
+        # 총 금액이나 보유 수량이 변경되었거나, 아직 계산되지 않은 경우
         if 'auto_calc_trigger' in st.session_state or 'calculate' not in st.session_state:
             st.session_state['total_balance'] = total_balance
             st.session_state['current_holdings'] = current_holdings
@@ -260,32 +264,7 @@ with st.sidebar:
         for key in keys_to_remove:
             if key in st.session_state:
                 del st.session_state[key]
-        # 이력은 유지 (선택적으로 이력도 초기화하려면 아래 주석 해제)
-        # if 'rebalancing_history' in st.session_state:
-        #     del st.session_state['rebalancing_history']
         st.rerun()
-    
-    # 리밸런싱 이력 표시
-    st.markdown("---")
-    st.subheader("📜 리밸런싱 이력")
-    
-    if 'rebalancing_history' in st.session_state and len(st.session_state['rebalancing_history']) > 0:
-        history = st.session_state['rebalancing_history']
-        # 최근 5개만 역순으로 표시 (최신이 위에)
-        recent_history = list(reversed(history[-5:]))
-        
-        for i, hist_item in enumerate(recent_history):
-            with st.expander(f"📅 {hist_item['date']} - 총 자산: ${hist_item['total_balance']:,.2f}", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("총 구매", f"${hist_item['total_buy']:,.2f}")
-                with col2:
-                    st.metric("총 매도", f"${hist_item['total_sell']:,.2f}")
-                
-                if 'net_rebalance' in hist_item:
-                    st.metric("순 리밸런싱", f"${hist_item['net_rebalance']:,.2f}")
-    else:
-        st.info("💾 저장된 이력이 없습니다. 계산 후 '현재 결과를 이력에 저장' 버튼을 클릭하세요.")
     
     # ==== 사이드바에 설정 정보 표시 ====
     if st.session_state.get('calculate', False):
@@ -467,26 +446,6 @@ if st.session_state.get('calculate', False):
         st.dataframe(priority_display_df, use_container_width=True, hide_index=True)
     else:
         st.success("✅ 모든 자산이 목표 비중에 근접해 있습니다!")
-    
-    st.markdown("---")
-    
-    # ==== 리밸런싱 이력 저장 ====
-    if st.button("💾 현재 결과를 이력에 저장", use_container_width=True):
-        if 'rebalancing_history' not in st.session_state:
-            st.session_state['rebalancing_history'] = []
-        
-        history_item = {
-            'date': current_date.strftime('%Y-%m-%d %H:%M:%S'),
-            'total_balance': total_balance,
-            'total_buy': total_buy_value,
-            'total_sell': total_sell_value,
-            'net_rebalance': total_buy_value - total_sell_value,
-            'rebalancing': rebalancing.copy()
-        }
-        
-        st.session_state['rebalancing_history'].append(history_item)
-        st.success(f"✅ {current_date.strftime('%Y-%m-%d %H:%M:%S')} 결과가 저장되었습니다!")
-        st.rerun()
     
     st.markdown("---")
     
