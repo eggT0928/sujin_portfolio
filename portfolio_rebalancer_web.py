@@ -1,7 +1,9 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 from datetime import datetime
+import math
 
 # plotly import (선택적)
 try:
@@ -173,6 +175,130 @@ def display_portfolio_table(rebalancing):
     return df
 
 
+# ==== 백테스트 함수들 ====
+
+def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=None):
+    """
+    포트폴리오 백테스트 실행 (월별 리밸런싱)
+    """
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+    
+    # 티커 변환 (BRK-B -> BRK.B for yfinance)
+    tickers_for_download = []
+    ticker_mapping = {}
+    for ticker in portfolio_weights.keys():
+        if ticker == "BRK-B":
+            tickers_for_download.append("BRK.B")
+            ticker_mapping["BRK.B"] = "BRK-B"
+        else:
+            tickers_for_download.append(ticker)
+            ticker_mapping[ticker] = ticker
+    
+    # 데이터 다운로드
+    with st.spinner("과거 데이터를 다운로드하는 중..."):
+        data = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False)["Adj Close"]
+        data.index = data.index.tz_localize(None)
+    
+    # 티커 이름 매핑 복원
+    data.columns = [ticker_mapping.get(col, col) for col in data.columns]
+    
+    # 월별 리밸런싱
+    monthly_data = data.resample("M").last().dropna()
+    
+    if len(monthly_data) < 2:
+        return None, None, None
+    
+    # 포트폴리오 가치 계산 (시작값 = 100)
+    portfolio_value = pd.Series(index=monthly_data.index, dtype=float)
+    portfolio_value.iloc[0] = 100.0
+    
+    for i in range(1, len(monthly_data)):
+        prev_value = portfolio_value.iloc[i-1]
+        
+        # 각 자산의 월간 수익률 계산
+        monthly_returns = {}
+        for ticker in portfolio_weights.keys():
+            if ticker in monthly_data.columns:
+                prev_price = monthly_data.iloc[i-1][ticker]
+                curr_price = monthly_data.iloc[i][ticker]
+                if not pd.isna(prev_price) and not pd.isna(curr_price) and prev_price > 0:
+                    monthly_returns[ticker] = (curr_price / prev_price) - 1
+                else:
+                    monthly_returns[ticker] = 0
+        
+        # 포트폴리오 수익률 = 가중 평균
+        portfolio_return = 0
+        for ticker, weight in portfolio_weights.items():
+            if ticker in monthly_returns:
+                portfolio_return += weight * monthly_returns[ticker]
+        
+        portfolio_value.iloc[i] = prev_value * (1 + portfolio_return)
+    
+    return portfolio_value, monthly_data, start_date
+
+
+def calculate_performance_metrics(portfolio_value):
+    """성과 지표 계산"""
+    if portfolio_value is None or len(portfolio_value) < 2:
+        return None
+    
+    # 일별 수익률 근사 (월별 데이터를 일별로 보간)
+    # 월별 데이터를 일별로 확장하여 계산
+    daily_index = pd.date_range(start=portfolio_value.index[0], end=portfolio_value.index[-1], freq='D')
+    daily_value = portfolio_value.reindex(daily_index).interpolate(method='linear')
+    daily_returns = daily_value.pct_change().dropna()
+    
+    # 기간 계산
+    years = (portfolio_value.index[-1] - portfolio_value.index[0]).days / 365.25
+    
+    # CAGR
+    total_return = (portfolio_value.iloc[-1] / portfolio_value.iloc[0]) - 1
+    cagr = ((1 + total_return) ** (1 / years) - 1) if years > 0 else 0
+    
+    # 연환산 표준편차
+    annual_vol = daily_returns.std() * np.sqrt(252) if len(daily_returns) > 0 else 0
+    
+    # MDD (최대 낙폭)
+    cumulative = portfolio_value
+    running_max = cumulative.expanding().max()
+    drawdown = (cumulative - running_max) / running_max
+    mdd = drawdown.min()
+    
+    # 샤프지수 (무위험 수익률 0% 가정)
+    sharpe = (cagr / annual_vol) if annual_vol > 0 else 0
+    
+    return {
+        "CAGR": cagr * 100,
+        "연환산 표준편차": annual_vol * 100,
+        "MDD": mdd * 100,
+        "샤프지수": sharpe,
+        "총 수익률": total_return * 100,
+        "기간(년)": years,
+        "시작일": portfolio_value.index[0].strftime('%Y-%m-%d'),
+        "종료일": portfolio_value.index[-1].strftime('%Y-%m-%d')
+    }
+
+
+def calculate_yearly_returns(portfolio_value):
+    """연도별 수익률 계산"""
+    if portfolio_value is None or len(portfolio_value) < 2:
+        return None
+    
+    yearly = portfolio_value.resample("YE").last()
+    yearly_returns = yearly.pct_change().dropna() * 100
+    return yearly_returns
+
+
+def calculate_monthly_returns(portfolio_value):
+    """월별 수익률 계산"""
+    if portfolio_value is None or len(portfolio_value) < 2:
+        return None
+    
+    monthly_returns = portfolio_value.pct_change().dropna() * 100
+    return monthly_returns
+
+
 # ==== Streamlit 앱 메인 ====
 st.set_page_config(
     page_title="포트폴리오 리밸런싱 계산기",
@@ -259,7 +385,8 @@ with st.sidebar:
             'calculate', 
             'total_balance', 
             'current_holdings',
-            'auto_calc_trigger'
+            'auto_calc_trigger',
+            'backtest_results'
         ]
         for key in keys_to_remove:
             if key in st.session_state:
@@ -489,6 +616,105 @@ if st.session_state.get('calculate', False):
         st.dataframe(rebalancing_df, use_container_width=True, hide_index=True)
     else:
         st.success("✅ 모든 포트폴리오가 목표 비중에 맞게 구성되어 있습니다!")
+    
+    # ==== 포트폴리오 백테스트 ====
+    st.markdown("---")
+    st.subheader("📊 포트폴리오 효용성 분석")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date_input = st.date_input(
+            "백테스트 시작일",
+            value=datetime(2020, 1, 1).date(),
+            min_value=datetime(2010, 1, 1).date(),
+            max_value=datetime.now().date()
+        )
+    
+    with col2:
+        if st.button("🔍 백테스트 실행", type="primary", use_container_width=True):
+            with st.spinner("백테스트를 실행하는 중..."):
+                portfolio_value, monthly_data, start_date = run_portfolio_backtest(
+                    PORTFOLIO, 
+                    start_date=start_date_input.strftime("%Y-%m-%d")
+                )
+                
+                if portfolio_value is not None:
+                    metrics = calculate_performance_metrics(portfolio_value)
+                    yearly_returns = calculate_yearly_returns(portfolio_value)
+                    monthly_returns = calculate_monthly_returns(portfolio_value)
+                    
+                    st.session_state['backtest_results'] = {
+                        'metrics': metrics,
+                        'yearly_returns': yearly_returns,
+                        'monthly_returns': monthly_returns,
+                        'portfolio_value': portfolio_value
+                    }
+                else:
+                    st.error("백테스트 실행 실패: 데이터가 부족합니다.")
+    
+    # 백테스트 결과 표시
+    if 'backtest_results' in st.session_state:
+        results = st.session_state['backtest_results']
+        
+        if results['metrics']:
+            # 성과 지표 표시
+            st.markdown("---")
+            st.subheader("📈 성과 지표")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("CAGR", f"{results['metrics']['CAGR']:.2f}%")
+            with col2:
+                st.metric("연환산 표준편차", f"{results['metrics']['연환산 표준편차']:.2f}%")
+            with col3:
+                st.metric("MDD", f"{results['metrics']['MDD']:.2f}%")
+            with col4:
+                st.metric("샤프지수", f"{results['metrics']['샤프지수']:.2f}")
+            with col5:
+                st.metric("총 수익률", f"{results['metrics']['총 수익률']:.2f}%")
+            
+            # 기간 정보
+            st.caption(f"기간: {results['metrics']['시작일']} ~ {results['metrics']['종료일']} ({results['metrics']['기간(년)']:.2f}년)")
+            
+            # 연도별 수익률 표
+            if results['yearly_returns'] is not None and len(results['yearly_returns']) > 0:
+                st.markdown("---")
+                st.subheader("📅 연도별 수익률")
+                yearly_df = results['yearly_returns'].to_frame("수익률 (%)")
+                yearly_df.index = yearly_df.index.year
+                yearly_df = yearly_df.round(2)
+                st.dataframe(yearly_df, use_container_width=True, height=300)
+            
+            # 월별 수익률 표
+            if results['monthly_returns'] is not None and len(results['monthly_returns']) > 0:
+                st.markdown("---")
+                st.subheader("📅 월별 수익률")
+                monthly_df = results['monthly_returns'].to_frame("수익률 (%)")
+                monthly_df.index = monthly_df.index.strftime("%Y-%m")
+                monthly_df = monthly_df.round(2)
+                st.dataframe(monthly_df, use_container_width=True, height=400)
+            
+            # 포트폴리오 가치 차트
+            if HAS_PLOTLY and results['portfolio_value'] is not None:
+                st.markdown("---")
+                st.subheader("📈 포트폴리오 가치 추이")
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=results['portfolio_value'].index,
+                    y=results['portfolio_value'].values,
+                    mode='lines',
+                    name='포트폴리오 가치',
+                    line=dict(color='#1f77b4', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(31, 119, 180, 0.1)'
+                ))
+                fig.update_layout(
+                    title="포트폴리오 가치 추이 (시작값 = 100)",
+                    xaxis_title="날짜",
+                    yaxis_title="포트폴리오 가치",
+                    height=400,
+                    hovermode='x unified'
+                )
+                st.plotly_chart(fig, use_container_width=True)
         
 else:
     st.info("👈 왼쪽 사이드바에서 총 금액과 현재 보유 주식 수를 입력하고 '계산하기' 버튼을 클릭하세요.")
