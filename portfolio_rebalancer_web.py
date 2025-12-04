@@ -2,6 +2,8 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
+import plotly.graph_objects as go
+import plotly.express as px
 
 
 # 포트폴리오 구성 (티커: 비중)
@@ -198,6 +200,15 @@ with st.sidebar:
     )
     
     st.markdown("---")
+    
+    # 자동 계산 모드 설정
+    auto_calculate = st.checkbox(
+        "🔄 자동 계산 모드",
+        value=False,
+        help="보유 수량 입력 시 자동으로 계산합니다."
+    )
+    
+    st.markdown("---")
     st.subheader("📦 현재 보유 주식 수")
     
     current_holdings = {}
@@ -208,10 +219,20 @@ with st.sidebar:
             value=0.0,
             step=0.01,
             format="%.2f",
-            key=f"holding_{ticker}"
+            key=f"holding_{ticker}",
+            on_change=lambda: st.session_state.update({'auto_calc_trigger': True}) if auto_calculate else None
         )
     
     st.markdown("---")
+    
+    # 자동 계산 모드일 때 자동 계산
+    if auto_calculate and total_balance > 0:
+        if 'auto_calc_trigger' in st.session_state or 'calculate' not in st.session_state:
+            st.session_state['total_balance'] = total_balance
+            st.session_state['current_holdings'] = current_holdings
+            st.session_state['calculate'] = True
+            if 'auto_calc_trigger' in st.session_state:
+                del st.session_state['auto_calc_trigger']
     
     if st.button("🚀 계산하기", type="primary", use_container_width=True):
         if total_balance <= 0:
@@ -224,12 +245,36 @@ with st.sidebar:
     if st.button("🔄 초기화", use_container_width=True):
         if 'calculate' in st.session_state:
             del st.session_state['calculate']
+        if 'rebalancing_history' in st.session_state:
+            del st.session_state['rebalancing_history']
         st.rerun()
+    
+    # 리밸런싱 이력 표시
+    if 'rebalancing_history' in st.session_state and len(st.session_state['rebalancing_history']) > 0:
+        st.markdown("---")
+        st.subheader("📜 리밸런싱 이력")
+        history = st.session_state['rebalancing_history']
+        for i, hist_item in enumerate(reversed(history[-5:])):  # 최근 5개만 표시
+            with st.expander(f"📅 {hist_item['date']} - 총 자산: ${hist_item['total_balance']:,.2f}", expanded=False):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("총 구매", f"${hist_item['total_buy']:,.2f}")
+                with col2:
+                    st.metric("총 매도", f"${hist_item['total_sell']:,.2f}")
+    
+    # ==== 사이드바에 설정 정보 표시 ====
+    if st.session_state.get('calculate', False):
+        st.markdown("---")
+        st.subheader("📊 설정 정보")
+        current_date = datetime.now()
+        st.metric("기준 날짜", current_date.strftime('%Y-%m-%d'))
+        st.metric("총 자산", f"${st.session_state.get('total_balance', 0):,.2f}")
 
 # 메인 영역에 결과 표시
 if st.session_state.get('calculate', False):
     total_balance = st.session_state.get('total_balance', 0)
     current_holdings = st.session_state.get('current_holdings', {})
+    current_date = datetime.now()
     
     with st.spinner("현재 가격을 조회하는 중..."):
         prices = get_current_prices(TICKERS)
@@ -239,6 +284,16 @@ if st.session_state.get('calculate', False):
     
     # 리밸런싱 계산
     rebalancing = calculate_rebalancing(target_shares, current_holdings, prices)
+    
+    # ==== 기준 날짜 및 설정 정보 표시 ====
+    st.subheader("📊 설정 정보")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("기준 날짜", current_date.strftime('%Y-%m-%d'))
+    with col2:
+        st.metric("총 자산", f"${total_balance:,.2f}")
+    
+    st.markdown("---")
     
     # 요약 정보
     st.subheader("📈 요약 정보")
@@ -259,17 +314,151 @@ if st.session_state.get('calculate', False):
     ])
     
     with col1:
-        st.metric("총 자산", f"${total_balance:,.2f}")
         st.metric("목표 평가액 합계", f"${total_target_value:,.2f}")
+        st.metric("현재 평가액 합계", f"${total_current_value:,.2f}" if total_current_value else "N/A")
     
     with col2:
-        st.metric("현재 평가액 합계", f"${total_current_value:,.2f}" if total_current_value else "N/A")
         st.metric("총 구매 필요 금액", f"${total_buy_value:,.2f}" if total_buy_value else "$0.00")
+        st.metric("총 매도 필요 금액", f"${total_sell_value:,.2f}" if total_sell_value else "$0.00")
     
     with col3:
-        st.metric("총 매도 필요 금액", f"${total_sell_value:,.2f}" if total_sell_value else "$0.00")
         net_rebalance = total_buy_value - total_sell_value
         st.metric("순 리밸런싱 금액", f"${net_rebalance:,.2f}" if net_rebalance else "$0.00")
+        # 현재 비중 vs 목표 비중 편차 계산
+        if total_current_value and total_current_value > 0:
+            deviation = ((total_current_value - total_target_value) / total_target_value) * 100
+            st.metric("비중 편차", f"{deviation:+.2f}%")
+    
+    st.markdown("---")
+    
+    # ==== 현재 비중 vs 목표 비중 비교 ====
+    st.subheader("📊 현재 비중 vs 목표 비중 비교")
+    comparison_data = []
+    priority_data = []  # 우선순위용 데이터
+    
+    for ticker in PORTFOLIO.keys():
+        target_weight = PORTFOLIO[ticker] * 100
+        current_value = rebalancing[ticker].get("current_value", 0)
+        current_weight = (current_value / total_current_value * 100) if total_current_value and total_current_value > 0 else 0
+        weight_diff = current_weight - target_weight
+        abs_weight_diff = abs(weight_diff)
+        
+        comparison_data.append({
+            "티커": ticker,
+            "목표 비중": f"{target_weight:.1f}%",
+            "현재 비중": f"{current_weight:.1f}%" if current_value else "0.0%",
+            "편차": f"{weight_diff:+.1f}%",
+            "상태": "✅" if abs_weight_diff < 1 else ("⬆️" if weight_diff > 0 else "⬇️")
+        })
+        
+        # 우선순위용 데이터 (편차가 큰 순서)
+        priority_data.append({
+            "티커": ticker,
+            "목표 비중": target_weight,
+            "현재 비중": current_weight,
+            "편차": weight_diff,
+            "절대 편차": abs_weight_diff,
+            "구매 필요": rebalancing[ticker].get("value_to_buy", 0) or 0,
+            "매도 필요": rebalancing[ticker].get("value_to_sell", 0) or 0
+        })
+    
+    comparison_df = pd.DataFrame(comparison_data)
+    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    
+    # ==== 포트폴리오 비중 차트 ====
+    st.markdown("---")
+    st.subheader("📊 포트폴리오 비중 비교 차트")
+    
+    chart_data = []
+    for ticker in PORTFOLIO.keys():
+        target_weight = PORTFOLIO[ticker] * 100
+        current_value = rebalancing[ticker].get("current_value", 0)
+        current_weight = (current_value / total_current_value * 100) if total_current_value and total_current_value > 0 else 0
+        
+        chart_data.append({
+            "티커": ticker,
+            "목표 비중": target_weight,
+            "현재 비중": current_weight
+        })
+    
+    chart_df = pd.DataFrame(chart_data)
+    
+    # 막대 차트 생성
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        name='목표 비중',
+        x=chart_df['티커'],
+        y=chart_df['목표 비중'],
+        marker_color='lightblue',
+        text=chart_df['목표 비중'].apply(lambda x: f'{x:.1f}%'),
+        textposition='outside'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name='현재 비중',
+        x=chart_df['티커'],
+        y=chart_df['현재 비중'],
+        marker_color='lightcoral',
+        text=chart_df['현재 비중'].apply(lambda x: f'{x:.1f}%'),
+        textposition='outside'
+    ))
+    
+    fig.update_layout(
+        title="포트폴리오 비중 비교",
+        xaxis_title="티커",
+        yaxis_title="비중 (%)",
+        barmode='group',
+        height=400,
+        showlegend=True
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # ==== 리밸런싱 우선순위 표시 ====
+    st.markdown("---")
+    st.subheader("🎯 리밸런싱 우선순위 (편차 큰 순서)")
+    
+    priority_df = pd.DataFrame(priority_data)
+    priority_df = priority_df.sort_values('절대 편차', ascending=False)
+    
+    priority_display = []
+    for _, row in priority_df.iterrows():
+        if row['절대 편차'] > 0.1:  # 편차가 0.1% 이상인 것만 표시
+            action = "구매" if row['구매 필요'] > 0 else ("매도" if row['매도 필요'] > 0 else "유지")
+            priority_display.append({
+                "순위": len(priority_display) + 1,
+                "티커": row['티커'],
+                "편차": f"{row['편차']:+.1f}%",
+                "액션": action,
+                "금액": f"${max(row['구매 필요'], row['매도 필요']):,.2f}" if max(row['구매 필요'], row['매도 필요']) > 0 else "-"
+            })
+    
+    if priority_display:
+        priority_display_df = pd.DataFrame(priority_display)
+        st.dataframe(priority_display_df, use_container_width=True, hide_index=True)
+    else:
+        st.success("✅ 모든 자산이 목표 비중에 근접해 있습니다!")
+    
+    st.markdown("---")
+    
+    # ==== 리밸런싱 이력 저장 ====
+    if st.button("💾 현재 결과를 이력에 저장", use_container_width=True):
+        if 'rebalancing_history' not in st.session_state:
+            st.session_state['rebalancing_history'] = []
+        
+        history_item = {
+            'date': current_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'total_balance': total_balance,
+            'total_buy': total_buy_value,
+            'total_sell': total_sell_value,
+            'net_rebalance': total_buy_value - total_sell_value,
+            'rebalancing': rebalancing.copy()
+        }
+        
+        st.session_state['rebalancing_history'].append(history_item)
+        st.success(f"✅ {current_date.strftime('%Y-%m-%d %H:%M:%S')} 결과가 저장되었습니다!")
+        st.rerun()
     
     st.markdown("---")
     
