@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 
 # plotly import (선택적)
@@ -177,6 +177,47 @@ def display_portfolio_table(rebalancing):
 
 # ==== 백테스트 함수들 ====
 
+def get_latest_listing_date(portfolio_weights):
+    """
+    각 티커의 첫 거래일을 확인하고 가장 늦은 날짜를 반환
+    """
+    listing_dates = {}
+    
+    # 티커 변환 (BRK-B -> BRK.B for yfinance)
+    ticker_mapping = {}
+    for ticker in portfolio_weights.keys():
+        if ticker == "BRK-B":
+            ticker_mapping["BRK.B"] = "BRK-B"
+        else:
+            ticker_mapping[ticker] = ticker
+    
+    for ticker in portfolio_weights.keys():
+        try:
+            # yfinance 티커 변환
+            yf_ticker = "BRK.B" if ticker == "BRK-B" else ticker
+            
+            # 최근 10년 데이터로 첫 거래일 확인
+            ticker_obj = yf.Ticker(yf_ticker)
+            hist = ticker_obj.history(period="10y", interval="1d")
+            
+            if not hist.empty:
+                first_date = hist.index[0].date()
+                listing_dates[ticker] = first_date
+        except Exception as e:
+            # 실패 시 기본값 사용하지 않고 스킵
+            continue
+    
+    if listing_dates:
+        # 가장 늦은 상장일 찾기
+        latest_date = max(listing_dates.values())
+        # 한 달 여유를 두고 설정
+        latest_date = latest_date + timedelta(days=30)
+        return latest_date
+    else:
+        # 모든 티커 조회 실패 시 기본값
+        return datetime(2022, 1, 1).date()
+
+
 def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=None):
     """
     포트폴리오 백테스트 실행 (월별 리밸런싱)
@@ -196,17 +237,59 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
             ticker_mapping[ticker] = ticker
     
     # 데이터 다운로드
-    with st.spinner("과거 데이터를 다운로드하는 중..."):
-        data = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False)["Adj Close"]
-        data.index = data.index.tz_localize(None)
+    try:
+        with st.spinner("과거 데이터를 다운로드하는 중..."):
+            downloaded = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False)
+            
+            # MultiIndex 컬럼 처리
+            if isinstance(downloaded.columns, pd.MultiIndex):
+                data = downloaded["Adj Close"]
+            else:
+                data = downloaded["Adj Close"] if "Adj Close" in downloaded.columns else downloaded
+            
+            # Series를 DataFrame으로 변환
+            if isinstance(data, pd.Series):
+                data = data.to_frame()
+                data.columns = [tickers_for_download[0]]
+            
+            data.index = data.index.tz_localize(None)
+            
+            # 티커 이름 매핑 복원
+            data.columns = [ticker_mapping.get(col, col) for col in data.columns]
+            
+    except Exception as e:
+        st.error(f"데이터 다운로드 실패: {str(e)}")
+        return None, None, None
     
-    # 티커 이름 매핑 복원
-    data.columns = [ticker_mapping.get(col, col) for col in data.columns]
+    if data.empty:
+        st.error("다운로드된 데이터가 없습니다. 시작일을 조정해보세요.")
+        return None, None, None
     
-    # 월별 리밸런싱
-    monthly_data = data.resample("M").last().dropna()
+    # 사용 가능한 티커 확인
+    available_tickers = [t for t in portfolio_weights.keys() if t in data.columns and not data[t].isna().all()]
+    
+    if len(available_tickers) == 0:
+        st.error("사용 가능한 티커 데이터가 없습니다.")
+        return None, None, None
+    
+    if len(available_tickers) < len(portfolio_weights):
+        missing = [t for t in portfolio_weights.keys() if t not in available_tickers]
+        st.warning(f"일부 티커 데이터가 없습니다: {', '.join(missing)}. 사용 가능한 티커만으로 백테스트를 진행합니다.")
+    
+    # 사용 가능한 티커만으로 가중치 재조정
+    available_weights = {t: portfolio_weights[t] for t in available_tickers}
+    total_weight = sum(available_weights.values())
+    if total_weight > 0:
+        available_weights = {t: w / total_weight for t, w in available_weights.items()}
+    
+    # 월별 리밸런싱 (사용 가능한 티커만)
+    monthly_data = data[available_tickers].resample("M").last()
+    
+    # NaN이 있는 행 제거 (모든 티커가 NaN인 경우만)
+    monthly_data = monthly_data.dropna(how='all')
     
     if len(monthly_data) < 2:
+        st.error(f"월별 데이터가 부족합니다 (필요: 최소 2개월, 현재: {len(monthly_data)}개월). 시작일을 조정해보세요.")
         return None, None, None
     
     # 포트폴리오 가치 계산 (시작값 = 100)
@@ -218,18 +301,21 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
         
         # 각 자산의 월간 수익률 계산
         monthly_returns = {}
-        for ticker in portfolio_weights.keys():
+        total_weight_used = 0
+        
+        for ticker in available_tickers:
             if ticker in monthly_data.columns:
                 prev_price = monthly_data.iloc[i-1][ticker]
                 curr_price = monthly_data.iloc[i][ticker]
                 if not pd.isna(prev_price) and not pd.isna(curr_price) and prev_price > 0:
                     monthly_returns[ticker] = (curr_price / prev_price) - 1
+                    total_weight_used += available_weights.get(ticker, 0)
                 else:
                     monthly_returns[ticker] = 0
         
         # 포트폴리오 수익률 = 가중 평균
         portfolio_return = 0
-        for ticker, weight in portfolio_weights.items():
+        for ticker, weight in available_weights.items():
             if ticker in monthly_returns:
                 portfolio_return += weight * monthly_returns[ticker]
         
@@ -621,13 +707,22 @@ if st.session_state.get('calculate', False):
     st.markdown("---")
     st.subheader("📊 포트폴리오 효용성 분석")
     
+    # 가장 늦은 상장일을 기본값으로 설정
+    if 'default_start_date' not in st.session_state:
+        with st.spinner("티커 상장일을 확인하는 중..."):
+            default_start_date = get_latest_listing_date(PORTFOLIO)
+            st.session_state['default_start_date'] = default_start_date
+    
+    default_start_date = st.session_state.get('default_start_date', datetime(2022, 1, 1).date())
+    
     col1, col2 = st.columns(2)
     with col1:
         start_date_input = st.date_input(
             "백테스트 시작일",
-            value=datetime(2020, 1, 1).date(),
+            value=default_start_date,
             min_value=datetime(2010, 1, 1).date(),
-            max_value=datetime.now().date()
+            max_value=datetime.now().date(),
+            help="각 티커의 상장일을 확인하여 가장 늦은 날짜를 기본값으로 설정했습니다."
         )
     
     with col2:
