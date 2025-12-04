@@ -454,12 +454,18 @@ def create_monthly_heatmap_data(monthly_returns):
         aggfunc='first'
     )
     
-    # 컬럼 이름을 월 이름으로 변경
+    # 컬럼 이름을 월 이름으로 변경 (있는 월만)
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-    heatmap_data.columns = [month_names[i-1] if i in heatmap_data.columns else None 
-                            for i in range(1, 13)]
-    heatmap_data = heatmap_data[[m for m in month_names if m in heatmap_data.columns]]
+    month_dict = {i: month_names[i-1] for i in range(1, 13)}
+    
+    # 실제 데이터가 있는 월만 선택
+    available_months = [month_dict[i] for i in heatmap_data.columns if i in month_dict]
+    heatmap_data.columns = [month_dict[i] if i in month_dict else f"Month_{i}" 
+                          for i in heatmap_data.columns]
+    
+    # 있는 월만 유지
+    heatmap_data = heatmap_data[[col for col in heatmap_data.columns if col in month_names]]
     
     # 연도 순서 역순 (최신 연도가 아래로)
     heatmap_data = heatmap_data.sort_index(ascending=False)
@@ -972,9 +978,12 @@ if st.session_state.get('calculate', False):
                     # 색상 설정 (양수: 초록, 음수: 빨강)
                     colors = ['#d32f2f' if x < 0 else '#2e7d32' for x in yearly_df['수익률']]
                     
+                    # 연도 레이블을 "2022년" 형식으로 변경
+                    year_labels = [f"{int(year)}년" for year in yearly_df.index]
+                    
                     fig = go.Figure()
                     fig.add_trace(go.Bar(
-                        x=yearly_df.index,
+                        x=year_labels,
                         y=yearly_df['수익률'],
                         marker_color=colors,
                         text=[f"{x:.1f}%" for x in yearly_df['수익률']],
@@ -991,7 +1000,7 @@ if st.session_state.get('calculate', False):
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     yearly_df = results['yearly_returns'].to_frame("수익률 (%)")
-                    yearly_df.index = yearly_df.index.year
+                    yearly_df.index = [f"{int(year)}년" for year in yearly_df.index.year]
                     yearly_df = yearly_df.round(2)
                     st.dataframe(yearly_df, use_container_width=True, height=300)
             
