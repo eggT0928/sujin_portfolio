@@ -16,40 +16,59 @@ PORTFOLIO = {
     "PDBC": 0.05
 }
 
-# yfinance에서 사용할 티커 리스트 (BRK-B는 BRK.B로 변환)
-TICKERS = ["QQQM", "SPY", "JEPQ", "BRK.B", "IEF", "TLT", "GLD", "PDBC"]
+# yfinance에서 사용할 티커 리스트
+# BRK-B는 yfinance에서 "BRK-B" 또는 "BRK.B" 둘 다 사용 가능
+TICKERS = ["QQQM", "SPY", "JEPQ", "BRK-B", "IEF", "TLT", "GLD", "PDBC"]
 TICKER_MAPPING = {
-    "BRK.B": "BRK-B"  # 표시용 이름
+    "BRK-B": "BRK-B",  # 표시용 이름 (동일)
+    "BRK.B": "BRK-B"   # 대체 티커 매핑
 }
 
 
 def get_current_prices(tickers):
-    """현재 가격 조회"""
+    """현재 가격 조회 (장중 가격 우선)"""
     prices = {}
     for ticker in tickers:
         price = None
-        try:
-            t = yf.Ticker(ticker)
-            # fast_info에서 가격 가져오기 시도
-            price = t.fast_info.get("last_price")
-            if price is None or price == 0:
-                # fast_info 실패 시 history 사용
-                hist = t.history(period="1d")
-                if not hist.empty:
-                    price = hist["Close"].iloc[-1]
-        except Exception as e:
-            # BRK.B 실패 시 BRK-B로 재시도
-            if ticker == "BRK.B":
+        
+        # BRK-B는 여러 티커 형식으로 시도
+        if ticker == "BRK-B":
+            alt_tickers = ["BRK-B", "BRK.B"]
+            for alt_ticker in alt_tickers:
                 try:
-                    t_alt = yf.Ticker("BRK-B")
-                    price = t_alt.fast_info.get("last_price")
+                    t = yf.Ticker(alt_ticker)
+                    # 1) 장중 가격(fast_info) 우선 조회
+                    try:
+                        price = t.fast_info.get("last_price")
+                    except:
+                        pass
+                    
+                    # 2) fast_info 실패 시 history 사용 (최근 종가)
                     if price is None or price == 0:
-                        hist_alt = t_alt.history(period="1d")
-                        if not hist_alt.empty:
-                            price = hist_alt["Close"].iloc[-1]
-                except Exception as e2:
-                    st.warning(f"BRK-B 가격 조회 실패 (BRK.B 및 BRK-B 모두 시도): {e2}")
-            else:
+                        hist = t.history(period="1d")
+                        if not hist.empty:
+                            price = hist["Close"].iloc[-1]
+                    
+                    if price and price > 0:
+                        break
+                except Exception as e:
+                    continue
+            
+            if price is None or price == 0:
+                st.warning(f"BRK-B 가격 조회 실패 (BRK-B 및 BRK.B 모두 시도했으나 실패)")
+        else:
+            # 다른 티커는 일반 방식
+            try:
+                t = yf.Ticker(ticker)
+                # 1) 장중 가격(fast_info) 우선 조회
+                price = t.fast_info.get("last_price")
+                
+                # 2) fast_info 실패 시 history 사용 (최근 종가)
+                if price is None or price == 0:
+                    hist = t.history(period="1d")
+                    if not hist.empty:
+                        price = hist["Close"].iloc[-1]
+            except Exception as e:
                 st.warning(f"{ticker} 가격 조회 실패: {e}")
         
         prices[ticker] = price
@@ -60,8 +79,8 @@ def calculate_target_shares(total_balance, prices):
     """목표 주식 수 계산"""
     target_shares = {}
     for ticker, allocation in PORTFOLIO.items():
-        # yfinance 티커로 변환 (BRK-B -> BRK.B)
-        yf_ticker = ticker if ticker != "BRK-B" else "BRK.B"
+        # yfinance 티커는 그대로 사용 (BRK-B는 BRK-B로 조회)
+        yf_ticker = ticker
         price = prices.get(yf_ticker)
         
         if price and price > 0:
@@ -86,7 +105,6 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
     rebalancing = {}
     
     for ticker, target_data in target_shares.items():
-        yf_ticker = ticker if ticker != "BRK-B" else "BRK.B"
         current_shares = current_holdings.get(ticker, 0)
         target_shares_count = target_data["target_shares"]
         price = target_data["current_price"]
