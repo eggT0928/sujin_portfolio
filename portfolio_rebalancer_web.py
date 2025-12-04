@@ -250,24 +250,42 @@ with st.sidebar:
             st.session_state['calculate'] = True
     
     if st.button("🔄 초기화", use_container_width=True):
-        if 'calculate' in st.session_state:
-            del st.session_state['calculate']
-        if 'rebalancing_history' in st.session_state:
-            del st.session_state['rebalancing_history']
+        # 모든 계산 관련 세션 상태 초기화
+        keys_to_remove = [
+            'calculate', 
+            'total_balance', 
+            'current_holdings',
+            'auto_calc_trigger'
+        ]
+        for key in keys_to_remove:
+            if key in st.session_state:
+                del st.session_state[key]
+        # 이력은 유지 (선택적으로 이력도 초기화하려면 아래 주석 해제)
+        # if 'rebalancing_history' in st.session_state:
+        #     del st.session_state['rebalancing_history']
         st.rerun()
     
     # 리밸런싱 이력 표시
+    st.markdown("---")
+    st.subheader("📜 리밸런싱 이력")
+    
     if 'rebalancing_history' in st.session_state and len(st.session_state['rebalancing_history']) > 0:
-        st.markdown("---")
-        st.subheader("📜 리밸런싱 이력")
         history = st.session_state['rebalancing_history']
-        for i, hist_item in enumerate(reversed(history[-5:])):  # 최근 5개만 표시
+        # 최근 5개만 역순으로 표시 (최신이 위에)
+        recent_history = list(reversed(history[-5:]))
+        
+        for i, hist_item in enumerate(recent_history):
             with st.expander(f"📅 {hist_item['date']} - 총 자산: ${hist_item['total_balance']:,.2f}", expanded=False):
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("총 구매", f"${hist_item['total_buy']:,.2f}")
                 with col2:
                     st.metric("총 매도", f"${hist_item['total_sell']:,.2f}")
+                
+                if 'net_rebalance' in hist_item:
+                    st.metric("순 리밸런싱", f"${hist_item['net_rebalance']:,.2f}")
+    else:
+        st.info("💾 저장된 이력이 없습니다. 계산 후 '현재 결과를 이력에 저장' 버튼을 클릭하세요.")
     
     # ==== 사이드바에 설정 정보 표시 ====
     if st.session_state.get('calculate', False):
