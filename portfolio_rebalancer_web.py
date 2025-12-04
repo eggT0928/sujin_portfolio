@@ -2,8 +2,15 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
-import plotly.graph_objects as go
-import plotly.express as px
+
+# plotly import (선택적)
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
+    st.warning("⚠️ plotly가 설치되지 않았습니다. 차트 기능이 비활성화됩니다.")
 
 
 # 포트폴리오 구성 (티커: 비중)
@@ -366,54 +373,57 @@ if st.session_state.get('calculate', False):
     st.dataframe(comparison_df, use_container_width=True, hide_index=True)
     
     # ==== 포트폴리오 비중 차트 ====
-    st.markdown("---")
-    st.subheader("📊 포트폴리오 비중 비교 차트")
-    
-    chart_data = []
-    for ticker in PORTFOLIO.keys():
-        target_weight = PORTFOLIO[ticker] * 100
-        current_value = rebalancing[ticker].get("current_value", 0)
-        current_weight = (current_value / total_current_value * 100) if total_current_value and total_current_value > 0 else 0
+    if HAS_PLOTLY:
+        st.markdown("---")
+        st.subheader("📊 포트폴리오 비중 비교 차트")
         
-        chart_data.append({
-            "티커": ticker,
-            "목표 비중": target_weight,
-            "현재 비중": current_weight
-        })
-    
-    chart_df = pd.DataFrame(chart_data)
-    
-    # 막대 차트 생성
-    fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        name='목표 비중',
-        x=chart_df['티커'],
-        y=chart_df['목표 비중'],
-        marker_color='lightblue',
-        text=chart_df['목표 비중'].apply(lambda x: f'{x:.1f}%'),
-        textposition='outside'
-    ))
-    
-    fig.add_trace(go.Bar(
-        name='현재 비중',
-        x=chart_df['티커'],
-        y=chart_df['현재 비중'],
-        marker_color='lightcoral',
-        text=chart_df['현재 비중'].apply(lambda x: f'{x:.1f}%'),
-        textposition='outside'
-    ))
-    
-    fig.update_layout(
-        title="포트폴리오 비중 비교",
-        xaxis_title="티커",
-        yaxis_title="비중 (%)",
-        barmode='group',
-        height=400,
-        showlegend=True
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+        chart_data = []
+        for ticker in PORTFOLIO.keys():
+            target_weight = PORTFOLIO[ticker] * 100
+            current_value = rebalancing[ticker].get("current_value", 0)
+            current_weight = (current_value / total_current_value * 100) if total_current_value and total_current_value > 0 else 0
+            
+            chart_data.append({
+                "티커": ticker,
+                "목표 비중": target_weight,
+                "현재 비중": current_weight
+            })
+        
+        chart_df = pd.DataFrame(chart_data)
+        
+        # 막대 차트 생성
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            name='목표 비중',
+            x=chart_df['티커'],
+            y=chart_df['목표 비중'],
+            marker_color='lightblue',
+            text=chart_df['목표 비중'].apply(lambda x: f'{x:.1f}%'),
+            textposition='outside'
+        ))
+        
+        fig.add_trace(go.Bar(
+            name='현재 비중',
+            x=chart_df['티커'],
+            y=chart_df['현재 비중'],
+            marker_color='lightcoral',
+            text=chart_df['현재 비중'].apply(lambda x: f'{x:.1f}%'),
+            textposition='outside'
+        ))
+        
+        fig.update_layout(
+            title="포트폴리오 비중 비교",
+            xaxis_title="티커",
+            yaxis_title="비중 (%)",
+            barmode='group',
+            height=400,
+            showlegend=True
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("📊 차트 기능을 사용하려면 plotly 패키지가 필요합니다. `pip install plotly`로 설치해주세요.")
     
     # ==== 리밸런싱 우선순위 표시 ====
     st.markdown("---")
