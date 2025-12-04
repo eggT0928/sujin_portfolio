@@ -237,15 +237,34 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
             ticker_mapping[ticker] = ticker
     
     # 데이터 다운로드
+    data = None
     try:
         with st.spinner("과거 데이터를 다운로드하는 중..."):
-            downloaded = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False)
+            downloaded = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False, group_by="ticker", auto_adjust=False)
+            
+            if downloaded.empty:
+                st.error(f"다운로드된 데이터가 없습니다. 시작일({start_date})을 조정해보세요.")
+                return None, None, None
             
             # MultiIndex 컬럼 처리
             if isinstance(downloaded.columns, pd.MultiIndex):
-                data = downloaded["Adj Close"]
+                # MultiIndex인 경우: (티커, 컬럼명) 형태
+                if "Adj Close" in downloaded.columns.levels[1]:
+                    data = downloaded["Adj Close"].copy()
+                elif "Close" in downloaded.columns.levels[1]:
+                    data = downloaded["Close"].copy()
+                else:
+                    # 첫 번째 컬럼 사용
+                    data = downloaded.iloc[:, 0].to_frame()
+                    data.columns = [downloaded.columns[0][0]]
             else:
-                data = downloaded["Adj Close"] if "Adj Close" in downloaded.columns else downloaded
+                # 단일 티커인 경우
+                if "Adj Close" in downloaded.columns:
+                    data = downloaded[["Adj Close"]].copy()
+                elif "Close" in downloaded.columns:
+                    data = downloaded[["Close"]].copy()
+                else:
+                    data = downloaded.iloc[:, [0]].copy()
             
             # Series를 DataFrame으로 변환
             if isinstance(data, pd.Series):
@@ -255,21 +274,36 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
             data.index = data.index.tz_localize(None)
             
             # 티커 이름 매핑 복원
-            data.columns = [ticker_mapping.get(col, col) for col in data.columns]
+            new_columns = []
+            for col in data.columns:
+                # MultiIndex에서 가져온 경우 처리
+                if isinstance(col, tuple):
+                    col_name = col[0] if len(col) > 0 else col
+                else:
+                    col_name = col
+                new_columns.append(ticker_mapping.get(col_name, col_name))
+            data.columns = new_columns
             
     except Exception as e:
         st.error(f"데이터 다운로드 실패: {str(e)}")
+        import traceback
+        st.error(f"상세 오류: {traceback.format_exc()}")
         return None, None, None
     
-    if data.empty:
+    if data is None or data.empty:
         st.error("다운로드된 데이터가 없습니다. 시작일을 조정해보세요.")
         return None, None, None
     
-    # 사용 가능한 티커 확인
-    available_tickers = [t for t in portfolio_weights.keys() if t in data.columns and not data[t].isna().all()]
+    # 사용 가능한 티커 확인 (NaN이 모두가 아닌 티커)
+    available_tickers = []
+    for t in portfolio_weights.keys():
+        if t in data.columns:
+            # 해당 티커의 데이터가 있는 행이 하나라도 있으면 사용 가능
+            if not data[t].isna().all():
+                available_tickers.append(t)
     
     if len(available_tickers) == 0:
-        st.error("사용 가능한 티커 데이터가 없습니다.")
+        st.error(f"사용 가능한 티커 데이터가 없습니다. 다운로드된 컬럼: {list(data.columns)}, 요청한 티커: {list(portfolio_weights.keys())}")
         return None, None, None
     
     if len(available_tickers) < len(portfolio_weights):
@@ -727,25 +761,35 @@ if st.session_state.get('calculate', False):
     
     with col2:
         if st.button("🔍 백테스트 실행", type="primary", use_container_width=True):
-            with st.spinner("백테스트를 실행하는 중..."):
-                portfolio_value, monthly_data, start_date = run_portfolio_backtest(
-                    PORTFOLIO, 
-                    start_date=start_date_input.strftime("%Y-%m-%d")
-                )
-                
-                if portfolio_value is not None:
-                    metrics = calculate_performance_metrics(portfolio_value)
-                    yearly_returns = calculate_yearly_returns(portfolio_value)
-                    monthly_returns = calculate_monthly_returns(portfolio_value)
+            try:
+                with st.spinner("백테스트를 실행하는 중..."):
+                    portfolio_value, monthly_data, start_date = run_portfolio_backtest(
+                        PORTFOLIO, 
+                        start_date=start_date_input.strftime("%Y-%m-%d")
+                    )
                     
-                    st.session_state['backtest_results'] = {
-                        'metrics': metrics,
-                        'yearly_returns': yearly_returns,
-                        'monthly_returns': monthly_returns,
-                        'portfolio_value': portfolio_value
-                    }
-                else:
-                    st.error("백테스트 실행 실패: 데이터가 부족합니다.")
+                    if portfolio_value is not None and len(portfolio_value) > 0:
+                        metrics = calculate_performance_metrics(portfolio_value)
+                        yearly_returns = calculate_yearly_returns(portfolio_value)
+                        monthly_returns = calculate_monthly_returns(portfolio_value)
+                        
+                        if metrics:
+                            st.session_state['backtest_results'] = {
+                                'metrics': metrics,
+                                'yearly_returns': yearly_returns,
+                                'monthly_returns': monthly_returns,
+                                'portfolio_value': portfolio_value
+                            }
+                            st.success("백테스트가 완료되었습니다!")
+                        else:
+                            st.error("성과 지표 계산에 실패했습니다.")
+                    else:
+                        # 에러 메시지는 run_portfolio_backtest 내부에서 이미 표시됨
+                        pass
+            except Exception as e:
+                st.error(f"백테스트 실행 중 오류 발생: {str(e)}")
+                import traceback
+                st.error(f"상세 오류: {traceback.format_exc()}")
     
     # 백테스트 결과 표시
     if 'backtest_results' in st.session_state:
