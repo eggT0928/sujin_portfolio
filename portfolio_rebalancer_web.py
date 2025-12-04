@@ -193,16 +193,26 @@ def get_latest_listing_date(portfolio_weights):
     
     for ticker in portfolio_weights.keys():
         try:
-            # yfinance 티커 변환
-            yf_ticker = "BRK.B" if ticker == "BRK-B" else ticker
+            # yfinance 티커 변환 (BRK-B는 여러 형식 시도)
+            if ticker == "BRK-B":
+                yf_tickers = ["BRK.B", "BRK-B"]
+            else:
+                yf_tickers = [ticker]
             
-            # 최근 10년 데이터로 첫 거래일 확인
-            ticker_obj = yf.Ticker(yf_ticker)
-            hist = ticker_obj.history(period="10y", interval="1d")
+            first_date = None
+            for yf_ticker in yf_tickers:
+                try:
+                    # 최근 10년 데이터로 첫 거래일 확인
+                    ticker_obj = yf.Ticker(yf_ticker)
+                    hist = ticker_obj.history(period="10y", interval="1d")
+                    
+                    if not hist.empty:
+                        first_date = hist.index[0].date()
+                        listing_dates[ticker] = first_date
+                        break  # 성공하면 루프 종료
+                except:
+                    continue  # 다음 티커 시도
             
-            if not hist.empty:
-                first_date = hist.index[0].date()
-                listing_dates[ticker] = first_date
         except Exception as e:
             # 실패 시 기본값 사용하지 않고 스킵
             continue
@@ -225,67 +235,47 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
     if end_date is None:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
-    # 티커 변환 (BRK-B -> BRK.B for yfinance)
-    tickers_for_download = []
+    # 티커 변환 및 개별 다운로드 (BRK-B는 BRK.B로 시도)
+    ticker_data_frames = []
     ticker_mapping = {}
+    
     for ticker in portfolio_weights.keys():
         if ticker == "BRK-B":
-            tickers_for_download.append("BRK.B")
-            ticker_mapping["BRK.B"] = "BRK-B"
+            # BRK-B는 BRK.B로 시도
+            yf_tickers = ["BRK.B", "BRK-B"]
         else:
-            tickers_for_download.append(ticker)
-            ticker_mapping[ticker] = ticker
+            yf_tickers = [ticker]
+        
+        ticker_downloaded = False
+        for yf_ticker in yf_tickers:
+            try:
+                ticker_obj = yf.Ticker(yf_ticker)
+                hist = ticker_obj.history(start=start_date, end=end_date, auto_adjust=False)
+                
+                if not hist.empty and "Adj Close" in hist.columns:
+                    adj_close = hist["Adj Close"].rename(ticker)
+                    ticker_data_frames.append(adj_close)
+                    ticker_mapping[ticker] = ticker
+                    ticker_downloaded = True
+                    break
+            except:
+                continue
+        
+        if not ticker_downloaded:
+            st.warning(f"{ticker} 데이터 다운로드 실패")
     
     # 데이터 다운로드
     data = None
     try:
         with st.spinner("과거 데이터를 다운로드하는 중..."):
-            # group_by="column"을 사용하면 (컬럼명, 티커) 형태가 됨
-            downloaded = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False, auto_adjust=False, group_by="column")
-            
-            if downloaded.empty:
-                st.error(f"다운로드된 데이터가 없습니다. 시작일({start_date})을 조정해보세요.")
+            if len(ticker_data_frames) == 0:
+                st.error("다운로드된 티커 데이터가 없습니다.")
                 return None, None, None
             
-            # MultiIndex 컬럼 처리
-            if isinstance(downloaded.columns, pd.MultiIndex):
-                # group_by="column"을 사용하면 level 0이 컬럼명, level 1이 티커
-                level_0_values = set(downloaded.columns.get_level_values(0))
-                
-                # Adj Close 찾기
-                if "Adj Close" in level_0_values:
-                    data = downloaded["Adj Close"].copy()
-                elif "Close" in level_0_values:
-                    data = downloaded["Close"].copy()
-                else:
-                    # 첫 번째 컬럼명 사용
-                    first_col = list(level_0_values)[0]
-                    data = downloaded[first_col].copy()
-            else:
-                # 단일 티커인 경우
-                if "Adj Close" in downloaded.columns:
-                    data = downloaded[["Adj Close"]].copy()
-                elif "Close" in downloaded.columns:
-                    data = downloaded[["Close"]].copy()
-                else:
-                    # 첫 번째 숫자 컬럼 사용
-                    data = downloaded.iloc[:, [0]].copy()
-                    data.columns = [tickers_for_download[0]]
-            
-            # Series를 DataFrame으로 변환
-            if isinstance(data, pd.Series):
-                data = data.to_frame()
-                data.columns = [tickers_for_download[0]]
+            # 모든 티커 데이터를 하나의 DataFrame으로 합치기
+            data = pd.concat(ticker_data_frames, axis=1)
             
             data.index = data.index.tz_localize(None)
-            
-            # 티커 이름 매핑 복원 (BRK.B -> BRK-B)
-            new_columns = []
-            for col in data.columns:
-                # 원본 티커 이름으로 매핑
-                mapped_name = ticker_mapping.get(col, col)
-                new_columns.append(mapped_name)
-            data.columns = new_columns
             
     except Exception as e:
         st.error(f"데이터 다운로드 실패: {str(e)}")
@@ -470,6 +460,14 @@ def create_monthly_heatmap_data(monthly_returns):
     heatmap_data.columns = [month_names[i-1] if i in heatmap_data.columns else None 
                             for i in range(1, 13)]
     heatmap_data = heatmap_data[[m for m in month_names if m in heatmap_data.columns]]
+    
+    # 연도 순서 역순 (최신 연도가 아래로)
+    heatmap_data = heatmap_data.sort_index(ascending=False)
+    
+    # 평균 행 추가 (맨 아래)
+    monthly_avg = heatmap_data.mean(axis=0)
+    avg_row = pd.DataFrame([monthly_avg.values], index=['평균'], columns=heatmap_data.columns)
+    heatmap_data = pd.concat([heatmap_data, avg_row])
     
     return heatmap_data
 
@@ -1005,9 +1003,12 @@ if st.session_state.get('calculate', False):
                 if HAS_PLOTLY:
                     heatmap_data = results['monthly_heatmap']
                     
+                    # 평균 행에 다른 색상 적용을 위한 z 값 준비
+                    z_values = heatmap_data.values.copy()
+                    
                     # 색상 스케일 설정 (빨강 -> 흰색 -> 초록)
                     fig = go.Figure(data=go.Heatmap(
-                        z=heatmap_data.values,
+                        z=z_values,
                         x=heatmap_data.columns,
                         y=heatmap_data.index.astype(str),
                         colorscale=[
@@ -1019,12 +1020,14 @@ if st.session_state.get('calculate', False):
                               for row in heatmap_data.values],
                         texttemplate='%{text}',
                         textfont={"size": 10},
-                        colorbar=dict(title="수익률 (%)")
+                        colorbar=dict(title="수익률 (%)"),
+                        ygap=2  # 행 간격
                     ))
                     fig.update_layout(
                         height=400 + len(heatmap_data) * 30,
                         xaxis_title="월",
-                        yaxis_title="연도"
+                        yaxis_title="연도",
+                        yaxis=dict(autorange='reversed')  # Y축 역순 (최신 연도가 아래)
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
