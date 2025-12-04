@@ -240,8 +240,8 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
     data = None
     try:
         with st.spinner("과거 데이터를 다운로드하는 중..."):
-            # group_by를 사용하지 않고 다운로드 (더 안정적)
-            downloaded = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False, auto_adjust=False)
+            # group_by="column"을 사용하면 (컬럼명, 티커) 형태가 됨
+            downloaded = yf.download(tickers_for_download, start=start_date, end=end_date, progress=False, auto_adjust=False, group_by="column")
             
             if downloaded.empty:
                 st.error(f"다운로드된 데이터가 없습니다. 시작일({start_date})을 조정해보세요.")
@@ -249,28 +249,18 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
             
             # MultiIndex 컬럼 처리
             if isinstance(downloaded.columns, pd.MultiIndex):
-                # MultiIndex인 경우: (티커, 컬럼명) 형태
-                # levels 확인
-                if len(downloaded.columns.levels) >= 2:
-                    level_1_values = downloaded.columns.levels[1].tolist()
-                    
-                    # Adj Close 찾기
-                    if "Adj Close" in level_1_values:
-                        data = downloaded.xs("Adj Close", level=1, axis=1).copy()
-                    elif "Close" in level_1_values:
-                        data = downloaded.xs("Close", level=1, axis=1).copy()
-                    else:
-                        # 첫 번째 레벨의 첫 번째 컬럼 사용
-                        first_ticker = downloaded.columns.levels[0][0]
-                        data = downloaded[first_ticker].copy()
-                        if isinstance(data, pd.DataFrame):
-                            # 첫 번째 숫자 컬럼 선택 (보통 Close 또는 Adj Close)
-                            data = data.iloc[:, 0].to_frame()
-                            data.columns = [first_ticker]
+                # group_by="column"을 사용하면 level 0이 컬럼명, level 1이 티커
+                level_0_values = set(downloaded.columns.get_level_values(0))
+                
+                # Adj Close 찾기
+                if "Adj Close" in level_0_values:
+                    data = downloaded["Adj Close"].copy()
+                elif "Close" in level_0_values:
+                    data = downloaded["Close"].copy()
                 else:
-                    # 예상치 못한 구조
-                    data = downloaded.iloc[:, 0].to_frame()
-                    data.columns = [downloaded.columns[0][0] if isinstance(downloaded.columns[0], tuple) else downloaded.columns[0]]
+                    # 첫 번째 컬럼명 사용
+                    first_col = list(level_0_values)[0]
+                    data = downloaded[first_col].copy()
             else:
                 # 단일 티커인 경우
                 if "Adj Close" in downloaded.columns:
@@ -280,6 +270,7 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
                 else:
                     # 첫 번째 숫자 컬럼 사용
                     data = downloaded.iloc[:, [0]].copy()
+                    data.columns = [tickers_for_download[0]]
             
             # Series를 DataFrame으로 변환
             if isinstance(data, pd.Series):
@@ -288,15 +279,12 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
             
             data.index = data.index.tz_localize(None)
             
-            # 티커 이름 매핑 복원
+            # 티커 이름 매핑 복원 (BRK.B -> BRK-B)
             new_columns = []
             for col in data.columns:
-                # MultiIndex에서 가져온 경우 처리
-                if isinstance(col, tuple):
-                    col_name = col[0] if len(col) > 0 else col
-                else:
-                    col_name = col
-                new_columns.append(ticker_mapping.get(col_name, col_name))
+                # 원본 티커 이름으로 매핑
+                mapped_name = ticker_mapping.get(col, col)
+                new_columns.append(mapped_name)
             data.columns = new_columns
             
     except Exception as e:
