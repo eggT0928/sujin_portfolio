@@ -27,6 +27,7 @@ def get_current_prices(tickers):
     """현재 가격 조회"""
     prices = {}
     for ticker in tickers:
+        price = None
         try:
             t = yf.Ticker(ticker)
             # fast_info에서 가격 가져오기 시도
@@ -36,12 +37,22 @@ def get_current_prices(tickers):
                 hist = t.history(period="1d")
                 if not hist.empty:
                     price = hist["Close"].iloc[-1]
-                else:
-                    price = None
-            prices[ticker] = price
         except Exception as e:
-            st.warning(f"{ticker} 가격 조회 실패: {e}")
-            prices[ticker] = None
+            # BRK.B 실패 시 BRK-B로 재시도
+            if ticker == "BRK.B":
+                try:
+                    t_alt = yf.Ticker("BRK-B")
+                    price = t_alt.fast_info.get("last_price")
+                    if price is None or price == 0:
+                        hist_alt = t_alt.history(period="1d")
+                        if not hist_alt.empty:
+                            price = hist_alt["Close"].iloc[-1]
+                except Exception as e2:
+                    st.warning(f"BRK-B 가격 조회 실패 (BRK.B 및 BRK-B 모두 시도): {e2}")
+            else:
+                st.warning(f"{ticker} 가격 조회 실패: {e}")
+        
+        prices[ticker] = price
     return prices
 
 
