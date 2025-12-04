@@ -472,10 +472,12 @@ def create_monthly_heatmap_data(monthly_returns):
     # 연도 순서 역순 (최신 연도가 아래로)
     heatmap_data = heatmap_data.sort_index(ascending=False)
     
-    # 평균 행 추가 (맨 아래) - NaN 값 제외하고 계산
+    # 평균 행 계산 (NaN 값 제외하고 계산)
     monthly_avg = heatmap_data.mean(axis=0, skipna=True)
     avg_row = pd.DataFrame([monthly_avg.values], index=['평균'], columns=heatmap_data.columns)
-    heatmap_data = pd.concat([heatmap_data, avg_row])
+    
+    # 평균 행을 맨 앞에 추가 (Y축 역순이므로 맨 앞이 차트 하단에 표시됨)
+    heatmap_data = pd.concat([avg_row, heatmap_data])
     
     return heatmap_data
 
@@ -1016,7 +1018,8 @@ if st.session_state.get('calculate', False):
                     
                     # Y축 레이블 생성 (연도는 정수로만, 평균은 그대로)
                     y_labels = []
-                    for idx in heatmap_data.index:
+                    y_positions = []
+                    for pos, idx in enumerate(heatmap_data.index):
                         if idx == '평균':
                             y_labels.append('평균')
                         else:
@@ -1026,6 +1029,7 @@ if st.session_state.get('calculate', False):
                                 y_labels.append(str(year_int))
                             except:
                                 y_labels.append(str(idx))
+                        y_positions.append(pos)
                     
                     # 평균 행에 다른 색상 적용을 위한 z 값 준비
                     z_values = heatmap_data.values.copy()
@@ -1034,7 +1038,7 @@ if st.session_state.get('calculate', False):
                     fig = go.Figure(data=go.Heatmap(
                         z=z_values,
                         x=heatmap_data.columns,
-                        y=y_labels,  # 커스텀 Y축 레이블 사용
+                        y=y_positions,  # 위치 인덱스 사용
                         colorscale=[
                             [0, '#d32f2f'],      # 빨강 (음수)
                             [0.5, '#ffffff'],   # 흰색 (0)
@@ -1051,7 +1055,13 @@ if st.session_state.get('calculate', False):
                         height=400 + len(heatmap_data) * 30,
                         xaxis_title="월",
                         yaxis_title="연도",
-                        yaxis=dict(autorange='reversed')  # Y축 역순 (최신 연도가 아래)
+                        yaxis=dict(
+                            autorange='reversed',  # Y축 역순 (최신 연도가 아래)
+                            tickmode='array',
+                            tickvals=y_positions,  # 정확한 위치에만 틱 표시
+                            ticktext=y_labels,     # 커스텀 레이블 사용
+                            dtick=None             # 자동 틱 생성 비활성화
+                        )
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
@@ -1170,4 +1180,3 @@ else:
     - GLD: 10%
     - PDBC: 5%
     """)
-
