@@ -377,12 +377,6 @@ def calculate_performance_metrics(portfolio_value, risk_free_rate=None):
     if risk_free_rate is None:
         risk_free_rate = get_risk_free_rate()
     
-    # 일별 수익률 근사 (월별 데이터를 일별로 보간)
-    # 월별 데이터를 일별로 확장하여 계산
-    daily_index = pd.date_range(start=portfolio_value.index[0], end=portfolio_value.index[-1], freq='D')
-    daily_value = portfolio_value.reindex(daily_index).interpolate(method='linear')
-    daily_returns = daily_value.pct_change().dropna()
-    
     # 기간 계산
     years = (portfolio_value.index[-1] - portfolio_value.index[0]).days / 365.25
     
@@ -390,8 +384,16 @@ def calculate_performance_metrics(portfolio_value, risk_free_rate=None):
     total_return = (portfolio_value.iloc[-1] / portfolio_value.iloc[0]) - 1
     cagr = ((1 + total_return) ** (1 / years) - 1) if years > 0 else 0
     
-    # 연환산 표준편차
-    annual_vol = daily_returns.std() * np.sqrt(252) if len(daily_returns) > 0 else 0
+    # 월별 수익률 계산 (portfolio_value는 월별 데이터)
+    monthly_returns = portfolio_value.pct_change().dropna()
+    
+    # 연환산 표준편차 (월별 수익률의 표준편차 * sqrt(12))
+    # 월별 수익률을 연환산하려면 sqrt(12)를 곱해야 함
+    if len(monthly_returns) > 1:
+        monthly_vol = monthly_returns.std()
+        annual_vol = monthly_vol * np.sqrt(12)
+    else:
+        annual_vol = 0
     
     # MDD (최대 낙폭)
     cumulative = portfolio_value
@@ -470,8 +472,8 @@ def create_monthly_heatmap_data(monthly_returns):
     # 연도 순서 역순 (최신 연도가 아래로)
     heatmap_data = heatmap_data.sort_index(ascending=False)
     
-    # 평균 행 추가 (맨 아래)
-    monthly_avg = heatmap_data.mean(axis=0)
+    # 평균 행 추가 (맨 아래) - NaN 값 제외하고 계산
+    monthly_avg = heatmap_data.mean(axis=0, skipna=True)
     avg_row = pd.DataFrame([monthly_avg.values], index=['평균'], columns=heatmap_data.columns)
     heatmap_data = pd.concat([heatmap_data, avg_row])
     
@@ -1012,6 +1014,19 @@ if st.session_state.get('calculate', False):
                 if HAS_PLOTLY:
                     heatmap_data = results['monthly_heatmap']
                     
+                    # Y축 레이블 생성 (연도는 정수로만, 평균은 그대로)
+                    y_labels = []
+                    for idx in heatmap_data.index:
+                        if idx == '평균':
+                            y_labels.append('평균')
+                        else:
+                            # 연도를 정수로 변환하여 표시
+                            try:
+                                year_int = int(float(idx))
+                                y_labels.append(str(year_int))
+                            except:
+                                y_labels.append(str(idx))
+                    
                     # 평균 행에 다른 색상 적용을 위한 z 값 준비
                     z_values = heatmap_data.values.copy()
                     
@@ -1019,7 +1034,7 @@ if st.session_state.get('calculate', False):
                     fig = go.Figure(data=go.Heatmap(
                         z=z_values,
                         x=heatmap_data.columns,
-                        y=heatmap_data.index.astype(str),
+                        y=y_labels,  # 커스텀 Y축 레이블 사용
                         colorscale=[
                             [0, '#d32f2f'],      # 빨강 (음수)
                             [0.5, '#ffffff'],   # 흰색 (0)
