@@ -361,10 +361,31 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
     return portfolio_value, monthly_data, start_date
 
 
-def calculate_performance_metrics(portfolio_value):
+def get_risk_free_rate():
+    """무위험 수익률 조회 (미국 10년 국채 수익률)"""
+    try:
+        # 미국 10년 국채 수익률 조회 (^TNX)
+        ticker = yf.Ticker("^TNX")
+        hist = ticker.history(period="1mo")
+        if not hist.empty:
+            # 최근 수익률 사용 (연율로 변환: 이미 % 단위이므로 100으로 나눔)
+            current_rate = hist["Close"].iloc[-1] / 100.0
+            return current_rate
+    except:
+        pass
+    
+    # 조회 실패 시 보수적인 기본값 사용 (최근 10년 국채 평균 약 2.5%)
+    return 0.025
+
+
+def calculate_performance_metrics(portfolio_value, risk_free_rate=None):
     """성과 지표 계산"""
     if portfolio_value is None or len(portfolio_value) < 2:
         return None
+    
+    # 무위험 수익률 설정
+    if risk_free_rate is None:
+        risk_free_rate = get_risk_free_rate()
     
     # 일별 수익률 근사 (월별 데이터를 일별로 보간)
     # 월별 데이터를 일별로 확장하여 계산
@@ -388,14 +409,16 @@ def calculate_performance_metrics(portfolio_value):
     drawdown = (cumulative - running_max) / running_max
     mdd = drawdown.min()
     
-    # 샤프지수 (무위험 수익률 0% 가정)
-    sharpe = (cagr / annual_vol) if annual_vol > 0 else 0
+    # 샤프지수 (무위험 수익률 반영)
+    # Sharpe Ratio = (CAGR - Risk-Free Rate) / Annual Volatility
+    sharpe = ((cagr - risk_free_rate) / annual_vol) if annual_vol > 0 else 0
     
     return {
         "CAGR": cagr * 100,
         "연환산 표준편차": annual_vol * 100,
         "MDD": mdd * 100,
         "샤프지수": sharpe,
+        "무위험 수익률": risk_free_rate * 100,
         "총 수익률": total_return * 100,
         "기간(년)": years,
         "시작일": portfolio_value.index[0].strftime('%Y-%m-%d'),
@@ -420,6 +443,114 @@ def calculate_monthly_returns(portfolio_value):
     
     monthly_returns = portfolio_value.pct_change().dropna() * 100
     return monthly_returns
+
+
+def create_monthly_heatmap_data(monthly_returns):
+    """월별 수익률 히트맵 데이터 생성 (연도 x 월)"""
+    if monthly_returns is None or len(monthly_returns) == 0:
+        return None
+    
+    # 연도와 월로 분리
+    monthly_returns.index = pd.to_datetime(monthly_returns.index)
+    monthly_returns_df = monthly_returns.to_frame("return")
+    monthly_returns_df['year'] = monthly_returns_df.index.year
+    monthly_returns_df['month'] = monthly_returns_df.index.month
+    
+    # 피벗 테이블 생성 (연도 x 월)
+    heatmap_data = monthly_returns_df.pivot_table(
+        values='return',
+        index='year',
+        columns='month',
+        aggfunc='first'
+    )
+    
+    # 컬럼 이름을 월 이름으로 변경
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    heatmap_data.columns = [month_names[i-1] if i in heatmap_data.columns else None 
+                            for i in range(1, 13)]
+    heatmap_data = heatmap_data[[m for m in month_names if m in heatmap_data.columns]]
+    
+    return heatmap_data
+
+
+def calculate_drawdown_events(portfolio_value):
+    """드로우다운 이벤트 계산"""
+    if portfolio_value is None or len(portfolio_value) < 2:
+        return None, None
+    
+    # 드로우다운 계산
+    cumulative = portfolio_value
+    running_max = cumulative.expanding().max()
+    drawdown = (cumulative - running_max) / running_max * 100
+    
+    # 드로우다운 이벤트 찾기 (새로운 드로우다운 시작)
+    drawdown_events = []
+    in_drawdown = False
+    drawdown_start = None
+    drawdown_start_value = None
+    max_drawdown = 0
+    
+    for i, (date, dd_value) in enumerate(drawdown.items()):
+        if dd_value < 0 and not in_drawdown:
+            # 드로우다운 시작
+            in_drawdown = True
+            drawdown_start = date
+            drawdown_start_value = cumulative.loc[date]
+            max_drawdown = dd_value
+        elif dd_value < max_drawdown and in_drawdown:
+            # 더 깊은 드로우다운
+            max_drawdown = dd_value
+        elif dd_value >= 0 and in_drawdown:
+            # 드로우다운 종료
+            # 최대 드로우다운 시점 찾기
+            drawdown_period = drawdown.loc[drawdown_start:date]
+            trough_date = drawdown_period.idxmin()
+            trough_value = drawdown_period.min()
+            
+            drawdown_events.append({
+                'start': drawdown_start,
+                'trough': trough_date,
+                'end': date,
+                'drawdown': trough_value
+            })
+            in_drawdown = False
+            max_drawdown = 0
+    
+    # 진행 중인 드로우다운 처리
+    if in_drawdown:
+        drawdown_period = drawdown.loc[drawdown_start:]
+        trough_date = drawdown_period.idxmin()
+        trough_value = drawdown_period.min()
+        drawdown_events.append({
+            'start': drawdown_start,
+            'trough': trough_date,
+            'end': portfolio_value.index[-1],
+            'drawdown': trough_value
+        })
+    
+    # 드로우다운 크기순으로 정렬
+    drawdown_events.sort(key=lambda x: x['drawdown'])
+    
+    return drawdown, drawdown_events
+
+
+def create_monthly_distribution(monthly_returns):
+    """월별 수익률 분포 히스토그램 데이터 생성"""
+    if monthly_returns is None or len(monthly_returns) == 0:
+        return None
+    
+    # 히스토그램 구간 설정 (-10% ~ 10%, 2% 간격)
+    bins = np.arange(-10, 12, 2)  # -10, -8, -6, ..., 8, 10
+    hist, bin_edges = np.histogram(monthly_returns.values, bins=bins)
+    
+    # 중간값 계산
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    return pd.DataFrame({
+        'bin_center': bin_centers,
+        'count': hist
+    })
 
 
 # ==== Streamlit 앱 메인 ====
@@ -772,16 +903,27 @@ if st.session_state.get('calculate', False):
                     )
                     
                     if portfolio_value is not None and len(portfolio_value) > 0:
-                        metrics = calculate_performance_metrics(portfolio_value)
+                        # 무위험 수익률 조회
+                        with st.spinner("무위험 수익률을 조회하는 중..."):
+                            risk_free_rate = get_risk_free_rate()
+                        
+                        metrics = calculate_performance_metrics(portfolio_value, risk_free_rate)
                         yearly_returns = calculate_yearly_returns(portfolio_value)
                         monthly_returns = calculate_monthly_returns(portfolio_value)
+                        monthly_heatmap = create_monthly_heatmap_data(monthly_returns)
+                        drawdown_series, drawdown_events = calculate_drawdown_events(portfolio_value)
+                        monthly_distribution = create_monthly_distribution(monthly_returns)
                         
                         if metrics:
                             st.session_state['backtest_results'] = {
                                 'metrics': metrics,
                                 'yearly_returns': yearly_returns,
                                 'monthly_returns': monthly_returns,
-                                'portfolio_value': portfolio_value
+                                'portfolio_value': portfolio_value,
+                                'monthly_heatmap': monthly_heatmap,
+                                'drawdown_series': drawdown_series,
+                                'drawdown_events': drawdown_events,
+                                'monthly_distribution': monthly_distribution
                             }
                             st.success("백테스트가 완료되었습니다!")
                         else:
@@ -802,7 +944,7 @@ if st.session_state.get('calculate', False):
             # 성과 지표 표시
             st.markdown("---")
             st.subheader("📈 성과 지표")
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
             with col1:
                 st.metric("CAGR", f"{results['metrics']['CAGR']:.2f}%")
             with col2:
@@ -813,29 +955,152 @@ if st.session_state.get('calculate', False):
                 st.metric("샤프지수", f"{results['metrics']['샤프지수']:.2f}")
             with col5:
                 st.metric("총 수익률", f"{results['metrics']['총 수익률']:.2f}%")
+            with col6:
+                if '무위험 수익률' in results['metrics']:
+                    st.metric("무위험 수익률", f"{results['metrics']['무위험 수익률']:.2f}%")
             
             # 기간 정보
             st.caption(f"기간: {results['metrics']['시작일']} ~ {results['metrics']['종료일']} ({results['metrics']['기간(년)']:.2f}년)")
             
-            # 연도별 수익률 표
+            # ==== 연도별 수익률 차트 ====
             if results['yearly_returns'] is not None and len(results['yearly_returns']) > 0:
                 st.markdown("---")
-                st.subheader("📅 연도별 수익률")
-                yearly_df = results['yearly_returns'].to_frame("수익률 (%)")
-                yearly_df.index = yearly_df.index.year
-                yearly_df = yearly_df.round(2)
-                st.dataframe(yearly_df, use_container_width=True, height=300)
+                st.subheader("📊 연도별 수익률 (%)")
+                
+                if HAS_PLOTLY:
+                    yearly_df = results['yearly_returns'].to_frame("수익률")
+                    yearly_df.index = yearly_df.index.year
+                    
+                    # 색상 설정 (양수: 초록, 음수: 빨강)
+                    colors = ['#d32f2f' if x < 0 else '#2e7d32' for x in yearly_df['수익률']]
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        x=yearly_df.index,
+                        y=yearly_df['수익률'],
+                        marker_color=colors,
+                        text=[f"{x:.1f}%" for x in yearly_df['수익률']],
+                        textposition='outside',
+                        name='연도별 수익률'
+                    ))
+                    fig.update_layout(
+                        xaxis_title="연도",
+                        yaxis_title="수익률 (%)",
+                        height=400,
+                        showlegend=False,
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    yearly_df = results['yearly_returns'].to_frame("수익률 (%)")
+                    yearly_df.index = yearly_df.index.year
+                    yearly_df = yearly_df.round(2)
+                    st.dataframe(yearly_df, use_container_width=True, height=300)
             
-            # 월별 수익률 표
-            if results['monthly_returns'] is not None and len(results['monthly_returns']) > 0:
+            # ==== 월별 수익률 히트맵 ====
+            if results.get('monthly_heatmap') is not None and not results['monthly_heatmap'].empty:
                 st.markdown("---")
-                st.subheader("📅 월별 수익률")
-                monthly_df = results['monthly_returns'].to_frame("수익률 (%)")
-                monthly_df.index = monthly_df.index.strftime("%Y-%m")
-                monthly_df = monthly_df.round(2)
-                st.dataframe(monthly_df, use_container_width=True, height=400)
+                st.subheader("📅 월별 수익률 (%)")
+                
+                if HAS_PLOTLY:
+                    heatmap_data = results['monthly_heatmap']
+                    
+                    # 색상 스케일 설정 (빨강 -> 흰색 -> 초록)
+                    fig = go.Figure(data=go.Heatmap(
+                        z=heatmap_data.values,
+                        x=heatmap_data.columns,
+                        y=heatmap_data.index.astype(str),
+                        colorscale=[
+                            [0, '#d32f2f'],      # 빨강 (음수)
+                            [0.5, '#ffffff'],   # 흰색 (0)
+                            [1, '#2e7d32']      # 초록 (양수)
+                        ],
+                        text=[[f"{val:.1f}%" if not pd.isna(val) else "" for val in row] 
+                              for row in heatmap_data.values],
+                        texttemplate='%{text}',
+                        textfont={"size": 10},
+                        colorbar=dict(title="수익률 (%)")
+                    ))
+                    fig.update_layout(
+                        height=400 + len(heatmap_data) * 30,
+                        xaxis_title="월",
+                        yaxis_title="연도"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.dataframe(results['monthly_heatmap'].round(2), use_container_width=True, height=400)
             
-            # 포트폴리오 가치 차트
+            # ==== 월별 수익률 분포 히스토그램 ====
+            if results.get('monthly_distribution') is not None:
+                st.markdown("---")
+                st.subheader("📊 월별 수익률 분포")
+                
+                if HAS_PLOTLY:
+                    dist_data = results['monthly_distribution']
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        x=dist_data['bin_center'],
+                        y=dist_data['count'],
+                        marker_color='#2e7d32',
+                        name='빈도'
+                    ))
+                    fig.update_layout(
+                        xaxis_title="수익률 (%)",
+                        yaxis_title="빈도",
+                        height=400,
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # ==== MDD 차트 ====
+            if results.get('drawdown_series') is not None and HAS_PLOTLY:
+                st.markdown("---")
+                st.subheader("📉 최대 손실폭 (MDD)")
+                
+                drawdown = results['drawdown_series']
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.metric("현재 MDD", f"{results['metrics']['MDD']:.2f}%")
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=drawdown.index,
+                    y=drawdown.values,
+                    mode='lines',
+                    fill='tozeroy',
+                    fillcolor='rgba(211, 47, 47, 0.3)',
+                    line=dict(color='#d32f2f', width=2),
+                    name='드로우다운'
+                ))
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                fig.update_layout(
+                    xaxis_title="날짜",
+                    yaxis_title="드로우다운 (%)",
+                    height=400,
+                    showlegend=False,
+                    hovermode='x unified'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # ==== 드로우다운 이벤트 테이블 ====
+            if results.get('drawdown_events') is not None and len(results['drawdown_events']) > 0:
+                st.markdown("---")
+                st.subheader("📋 포트폴리오 드로우다운")
+                
+                events = results['drawdown_events'][:10]  # 상위 10개만
+                events_data = []
+                for i, event in enumerate(events, 1):
+                    events_data.append({
+                        '순위': i,
+                        '시작': event['start'].strftime('%Y/%m'),
+                        '종료': event['end'].strftime('%Y/%m'),
+                        '드로우다운': f"{event['drawdown']:.1f}%"
+                    })
+                
+                events_df = pd.DataFrame(events_data)
+                st.dataframe(events_df, use_container_width=True, hide_index=True)
+            
+            # ==== 포트폴리오 가치 추이 ====
             if HAS_PLOTLY and results['portfolio_value'] is not None:
                 st.markdown("---")
                 st.subheader("📈 포트폴리오 가치 추이")
