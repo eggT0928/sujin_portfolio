@@ -381,15 +381,21 @@ def get_risk_free_rate(start_date: str = None, end_date: str = None):
     return 0.025
 
 
-def calculate_performance_metrics(portfolio_value, risk_free_rate=None):
+def calculate_performance_metrics(portfolio_value, risk_free_rate=None, backtest_start_date=None, backtest_end_date=None):
     """성과 지표 계산"""
     if portfolio_value is None or len(portfolio_value) < 2:
         return None
     
     # 무위험 수익률 설정 (백테스트 기간 전체의 평균 사용)
     if risk_free_rate is None:
-        start_date_str = portfolio_value.index[0].strftime('%Y-%m-%d')
-        end_date_str = portfolio_value.index[-1].strftime('%Y-%m-%d')
+        # 실제 백테스트 시작일/종료일이 제공되면 사용, 없으면 portfolio_value의 기간 사용
+        if backtest_start_date and backtest_end_date:
+            start_date_str = backtest_start_date.strftime('%Y-%m-%d') if hasattr(backtest_start_date, 'strftime') else str(backtest_start_date)
+            end_date_str = backtest_end_date.strftime('%Y-%m-%d') if hasattr(backtest_end_date, 'strftime') else str(backtest_end_date)
+        else:
+            # portfolio_value는 월별 데이터이므로, 첫 월의 시작일과 마지막 월의 종료일 사용
+            start_date_str = portfolio_value.index[0].strftime('%Y-%m-%d')
+            end_date_str = portfolio_value.index[-1].strftime('%Y-%m-%d')
         risk_free_rate = get_risk_free_rate(start_date=start_date_str, end_date=end_date_str)
     
     # 기간 계산
@@ -928,10 +934,17 @@ if st.session_state.get('calculate', False):
                     if portfolio_value is not None and len(portfolio_value) > 0:
                         # 무위험 수익률 조회 (백테스트 기간 전체의 평균 사용)
                         with st.spinner("무위험 수익률을 조회하는 중..."):
-                            # calculate_performance_metrics 내부에서 자동으로 기간 평균 계산
+                            # 실제 백테스트 시작일과 종료일 전달
+                            backtest_start = datetime.strptime(start_date, "%Y-%m-%d") if isinstance(start_date, str) else start_date
+                            backtest_end = datetime.now()
                             risk_free_rate = None  # None으로 전달하면 함수 내부에서 기간 평균 계산
                         
-                        metrics = calculate_performance_metrics(portfolio_value, risk_free_rate)
+                        metrics = calculate_performance_metrics(
+                            portfolio_value, 
+                            risk_free_rate, 
+                            backtest_start_date=backtest_start,
+                            backtest_end_date=backtest_end
+                        )
                         yearly_returns = calculate_yearly_returns(portfolio_value)
                         monthly_returns = calculate_monthly_returns(portfolio_value)
                         monthly_heatmap = create_monthly_heatmap_data(monthly_returns)
