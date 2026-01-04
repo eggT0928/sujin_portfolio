@@ -351,16 +351,29 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
     return portfolio_value, monthly_data, start_date
 
 
-def get_risk_free_rate():
-    """무위험 수익률 조회 (미국 10년 국채 수익률)"""
+def get_risk_free_rate(start_date: str = None, end_date: str = None):
+    """
+    무위험 수익률 조회 (미국 10년 국채 수익률)
+    start_date와 end_date가 제공되면 해당 기간의 평균을 사용,
+    없으면 최근 1개월 값을 사용
+    """
     try:
         # 미국 10년 국채 수익률 조회 (^TNX)
         ticker = yf.Ticker("^TNX")
-        hist = ticker.history(period="1mo")
-        if not hist.empty:
-            # 최근 수익률 사용 (연율로 변환: 이미 % 단위이므로 100으로 나눔)
-            current_rate = hist["Close"].iloc[-1] / 100.0
-            return current_rate
+        
+        if start_date and end_date:
+            # 백테스트 기간 전체의 평균 사용
+            hist = ticker.history(start=start_date, end=end_date)
+            if not hist.empty:
+                # 기간 전체의 평균 수익률 (이미 % 단위이므로 100으로 나눔)
+                avg_rate = hist["Close"].mean() / 100.0
+                return avg_rate
+        else:
+            # 최근 1개월 값 사용 (기존 방식)
+            hist = ticker.history(period="1mo")
+            if not hist.empty:
+                current_rate = hist["Close"].iloc[-1] / 100.0
+                return current_rate
     except:
         pass
     
@@ -373,9 +386,11 @@ def calculate_performance_metrics(portfolio_value, risk_free_rate=None):
     if portfolio_value is None or len(portfolio_value) < 2:
         return None
     
-    # 무위험 수익률 설정
+    # 무위험 수익률 설정 (백테스트 기간 전체의 평균 사용)
     if risk_free_rate is None:
-        risk_free_rate = get_risk_free_rate()
+        start_date_str = portfolio_value.index[0].strftime('%Y-%m-%d')
+        end_date_str = portfolio_value.index[-1].strftime('%Y-%m-%d')
+        risk_free_rate = get_risk_free_rate(start_date=start_date_str, end_date=end_date_str)
     
     # 기간 계산
     years = (portfolio_value.index[-1] - portfolio_value.index[0]).days / 365.25
@@ -911,9 +926,10 @@ if st.session_state.get('calculate', False):
                     )
                     
                     if portfolio_value is not None and len(portfolio_value) > 0:
-                        # 무위험 수익률 조회
+                        # 무위험 수익률 조회 (백테스트 기간 전체의 평균 사용)
                         with st.spinner("무위험 수익률을 조회하는 중..."):
-                            risk_free_rate = get_risk_free_rate()
+                            # calculate_performance_metrics 내부에서 자동으로 기간 평균 계산
+                            risk_free_rate = None  # None으로 전달하면 함수 내부에서 기간 평균 계산
                         
                         metrics = calculate_performance_metrics(portfolio_value, risk_free_rate)
                         yearly_returns = calculate_yearly_returns(portfolio_value)
