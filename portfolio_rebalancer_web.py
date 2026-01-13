@@ -163,61 +163,40 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
             # 목표 총 가치 (SPY + SPYM 합산)
             target_total_value = target_data["target_value"]
             
-            # 차이 계산
-            value_diff = target_total_value - total_current_value
+            # SPY는 현재 보유 수량 유지 (수수료 때문에 더 늘리지 않음)
+            # SPY 목표 가치 = 현재 SPY 가치 (변경 없음)
+            spy_target_value = spy_current_value
+            spy_target_shares = spy_current_shares  # 현재 보유 수량 유지
             
-            # 현재 비중 계산 (현재 보유 비중 기준으로 차이를 분배)
-            spy_weight = 0.5  # 기본값: 50:50
-            spym_weight = 0.5
+            # SPYM 목표 가치 = 목표 총 가치 - SPY 현재 가치
+            spym_target_value = target_total_value - spy_target_value
             
-            if total_current_value > 0:
-                # 현재 보유 비중으로 분배
-                spy_weight = spy_current_value / total_current_value
-                spym_weight = spym_current_value / total_current_value
-            elif spy_price and spy_price > 0 and spym_price and spym_price > 0:
-                # 현재 보유가 없으면 가격 비중으로 분배
-                total_price = spy_price + spym_price
-                spy_weight = spy_price / total_price
-                spym_weight = spym_price / total_price
-            elif spy_price and spy_price > 0:
-                spy_weight = 1.0
-                spym_weight = 0.0
-            elif spym_price and spym_price > 0:
-                spy_weight = 0.0
-                spym_weight = 1.0
-            
-            # 목표 가치를 현재 비중에 맞춰 분배
-            spy_target_value = target_total_value * spy_weight
-            spym_target_value = target_total_value * spym_weight
-            
-            # 목표 주식 수 계산
-            spy_target_shares = spy_target_value / spy_price if spy_price and spy_price > 0 else None
+            # SPYM 목표 주식 수 계산
             spym_target_shares = spym_target_value / spym_price if spym_price and spym_price > 0 else None
             
-            # SPY 리밸런싱 계산
+            # SPY 리밸런싱 계산 (SPY는 현재 보유 수량 유지, 구매/매도 없음)
             spy_rebalancing = {}
             if spy_price and spy_price > 0:
-                spy_shares_diff = (spy_target_shares - spy_current_shares) if spy_target_shares is not None else 0
-                spy_value_diff = spy_shares_diff * spy_price
+                # SPY는 현재 보유 수량 유지 (수수료 때문에 더 늘리지 않음)
                 spy_rebalancing = {
                     "current_shares": spy_current_shares,
-                    "target_shares": spy_target_shares,
-                    "shares_to_buy": max(0, spy_shares_diff) if spy_shares_diff > 0 else 0,
-                    "shares_to_sell": abs(min(0, spy_shares_diff)) if spy_shares_diff < 0 else 0,
-                    "value_to_buy": max(0, spy_value_diff) if spy_value_diff > 0 else 0,
-                    "value_to_sell": abs(min(0, spy_value_diff)) if spy_value_diff < 0 else 0,
+                    "target_shares": spy_target_shares,  # 현재 보유 수량과 동일
+                    "shares_to_buy": 0,  # 구매 없음
+                    "shares_to_sell": 0,  # 매도 없음
+                    "value_to_buy": 0,  # 구매 없음
+                    "value_to_sell": 0,  # 매도 없음
                     "current_value": spy_current_value,
-                    "target_value": spy_target_value,
+                    "target_value": spy_target_value,  # 현재 가치와 동일
                     "current_price": spy_price
                 }
             else:
                 spy_rebalancing = {
                     "current_shares": spy_current_shares,
-                    "target_shares": None,
-                    "shares_to_buy": None,
-                    "shares_to_sell": None,
-                    "value_to_buy": None,
-                    "value_to_sell": None,
+                    "target_shares": spy_target_shares,
+                    "shares_to_buy": 0,
+                    "shares_to_sell": 0,
+                    "value_to_buy": 0,
+                    "value_to_sell": 0,
                     "current_value": spy_current_value,
                     "target_value": spy_target_value,
                     "current_price": spy_price
@@ -252,14 +231,14 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
                     "current_price": spym_price
                 }
             
-            # 합산 정보 저장
+            # 합산 정보 저장 (SPY는 구매/매도 없으므로 SPYM만 합산)
             rebalancing["SPY+SPYM"] = {
                 "current_shares": None,  # 개별 주식 수는 별도로 관리
                 "target_shares": None,
                 "shares_to_buy": None,
                 "shares_to_sell": None,
-                "value_to_buy": (spy_rebalancing.get("value_to_buy", 0) or 0) + (spym_rebalancing.get("value_to_buy", 0) or 0),
-                "value_to_sell": (spy_rebalancing.get("value_to_sell", 0) or 0) + (spym_rebalancing.get("value_to_sell", 0) or 0),
+                "value_to_buy": spym_rebalancing.get("value_to_buy", 0) or 0,  # SPYM만 구매
+                "value_to_sell": spym_rebalancing.get("value_to_sell", 0) or 0,  # SPYM만 매도
                 "current_value": total_current_value,
                 "target_value": target_total_value,
                 "current_price": target_data.get("current_price"),
