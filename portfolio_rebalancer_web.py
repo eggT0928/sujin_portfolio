@@ -16,9 +16,10 @@ except ImportError:
 
 
 # 포트폴리오 구성 (티커: 비중)
+# SPY와 SPYM은 합산하여 20% 비중을 차지
 PORTFOLIO = {
     "QQQM": 0.15,
-    "SPY": 0.20,
+    "SPY+SPYM": 0.20,  # SPY와 SPYM 합산 비중
     "JEPQ": 0.10,
     "BRK-B": 0.15,
     "IEF": 0.15,
@@ -27,9 +28,12 @@ PORTFOLIO = {
     "PDBC": 0.05
 }
 
+# S&P 500 관련 티커 (SPY와 SPYM 합산)
+SNP_TICKERS = ["SPY", "SPYM"]
+
 # yfinance에서 사용할 티커 리스트
 # BRK-B는 yfinance에서 "BRK-B" 또는 "BRK.B" 둘 다 사용 가능
-TICKERS = ["QQQM", "SPY", "JEPQ", "BRK-B", "IEF", "TLT", "GLD", "PDBC"]
+TICKERS = ["QQQM", "SPY", "SPYM", "JEPQ", "BRK-B", "IEF", "TLT", "GLD", "PDBC"]
 TICKER_MAPPING = {
     "BRK-B": "BRK-B",  # 표시용 이름 (동일)
     "BRK.B": "BRK-B"   # 대체 티커 매핑
@@ -90,24 +94,90 @@ def calculate_target_shares(total_balance, prices):
     """목표 주식 수 계산"""
     target_shares = {}
     for ticker, allocation in PORTFOLIO.items():
-        # yfinance 티커는 그대로 사용 (BRK-B는 BRK-B로 조회)
-        yf_ticker = ticker
-        price = prices.get(yf_ticker)
-        
-        if price and price > 0:
+        # SPY+SPYM의 경우 특별 처리
+        if ticker == "SPY+SPYM":
+            spy_price = prices.get("SPY")
+            spym_price = prices.get("SPYM")
             target_value = total_balance * allocation
-            shares = target_value / price
-            target_shares[ticker] = {
-                "target_value": target_value,
-                "target_shares": shares,
-                "current_price": price
-            }
+            
+            # 두 가격이 모두 있으면 평균 가격으로 계산 (또는 각각 50%씩 분배)
+            if spy_price and spy_price > 0 and spym_price and spym_price > 0:
+                # 목표 가치를 두 티커에 50:50으로 분배
+                spy_target_value = target_value / 2
+                spym_target_value = target_value / 2
+                spy_shares = spy_target_value / spy_price
+                spym_shares = spym_target_value / spym_price
+                
+                target_shares["SPY+SPYM"] = {
+                    "target_value": target_value,
+                    "target_shares": None,  # 개별 주식 수는 별도로 관리
+                    "current_price": (spy_price + spym_price) / 2,  # 평균 가격
+                    "spy_target_value": spy_target_value,
+                    "spy_target_shares": spy_shares,
+                    "spy_price": spy_price,
+                    "spym_target_value": spym_target_value,
+                    "spym_target_shares": spym_shares,
+                    "spym_price": spym_price
+                }
+            elif spy_price and spy_price > 0:
+                # SPY만 있는 경우
+                spy_shares = target_value / spy_price
+                target_shares["SPY+SPYM"] = {
+                    "target_value": target_value,
+                    "target_shares": None,
+                    "current_price": spy_price,
+                    "spy_target_value": target_value,
+                    "spy_target_shares": spy_shares,
+                    "spy_price": spy_price,
+                    "spym_target_value": 0,
+                    "spym_target_shares": 0,
+                    "spym_price": None
+                }
+            elif spym_price and spym_price > 0:
+                # SPYM만 있는 경우
+                spym_shares = target_value / spym_price
+                target_shares["SPY+SPYM"] = {
+                    "target_value": target_value,
+                    "target_shares": None,
+                    "current_price": spym_price,
+                    "spy_target_value": 0,
+                    "spy_target_shares": 0,
+                    "spy_price": None,
+                    "spym_target_value": target_value,
+                    "spym_target_shares": spym_shares,
+                    "spym_price": spym_price
+                }
+            else:
+                target_shares["SPY+SPYM"] = {
+                    "target_value": target_value,
+                    "target_shares": None,
+                    "current_price": None,
+                    "spy_target_value": target_value / 2,
+                    "spy_target_shares": None,
+                    "spy_price": None,
+                    "spym_target_value": target_value / 2,
+                    "spym_target_shares": None,
+                    "spym_price": None
+                }
         else:
-            target_shares[ticker] = {
-                "target_value": total_balance * allocation,
-                "target_shares": None,
-                "current_price": None
-            }
+            # 일반 티커 처리
+            yf_ticker = ticker
+            price = prices.get(yf_ticker)
+            
+            if price and price > 0:
+                target_value = total_balance * allocation
+                shares = target_value / price
+                target_shares[ticker] = {
+                    "target_value": target_value,
+                    "target_shares": shares,
+                    "current_price": price
+                }
+            else:
+                target_shares[ticker] = {
+                    "target_value": total_balance * allocation,
+                    "target_shares": None,
+                    "current_price": None
+                }
     return target_shares
 
 
@@ -116,37 +186,129 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
     rebalancing = {}
     
     for ticker, target_data in target_shares.items():
-        current_shares = current_holdings.get(ticker, 0)
-        target_shares_count = target_data["target_shares"]
-        price = target_data["current_price"]
-        
-        if target_shares_count is not None and price is not None:
-            shares_diff = target_shares_count - current_shares
-            value_diff = shares_diff * price
+        # SPY+SPYM의 경우 특별 처리
+        if ticker == "SPY+SPYM":
+            spy_current_shares = current_holdings.get("SPY", 0)
+            spym_current_shares = current_holdings.get("SPYM", 0)
             
-            rebalancing[ticker] = {
-                "current_shares": current_shares,
-                "target_shares": target_shares_count,
-                "shares_to_buy": max(0, shares_diff) if shares_diff > 0 else 0,
-                "shares_to_sell": abs(min(0, shares_diff)) if shares_diff < 0 else 0,
-                "value_to_buy": max(0, value_diff) if value_diff > 0 else 0,
-                "value_to_sell": abs(min(0, value_diff)) if value_diff < 0 else 0,
-                "current_value": current_shares * price,
-                "target_value": target_data["target_value"],
-                "current_price": price
-            }
-        else:
-            rebalancing[ticker] = {
-                "current_shares": current_holdings.get(ticker, 0),
+            spy_price = target_data.get("spy_price")
+            spym_price = target_data.get("spym_price")
+            spy_target_shares = target_data.get("spy_target_shares")
+            spym_target_shares = target_data.get("spym_target_shares")
+            
+            # 현재 가치 계산
+            spy_current_value = spy_current_shares * spy_price if spy_price else 0
+            spym_current_value = spym_current_shares * spym_price if spym_price else 0
+            total_current_value = spy_current_value + spym_current_value
+            
+            # 목표 가치
+            target_value = target_data["target_value"]
+            
+            # SPY 리밸런싱 계산
+            spy_rebalancing = {}
+            if spy_target_shares is not None and spy_price is not None:
+                spy_shares_diff = spy_target_shares - spy_current_shares
+                spy_value_diff = spy_shares_diff * spy_price
+                spy_rebalancing = {
+                    "current_shares": spy_current_shares,
+                    "target_shares": spy_target_shares,
+                    "shares_to_buy": max(0, spy_shares_diff) if spy_shares_diff > 0 else 0,
+                    "shares_to_sell": abs(min(0, spy_shares_diff)) if spy_shares_diff < 0 else 0,
+                    "value_to_buy": max(0, spy_value_diff) if spy_value_diff > 0 else 0,
+                    "value_to_sell": abs(min(0, spy_value_diff)) if spy_value_diff < 0 else 0,
+                    "current_value": spy_current_value,
+                    "target_value": target_data.get("spy_target_value", 0),
+                    "current_price": spy_price
+                }
+            else:
+                spy_rebalancing = {
+                    "current_shares": spy_current_shares,
+                    "target_shares": None,
+                    "shares_to_buy": None,
+                    "shares_to_sell": None,
+                    "value_to_buy": None,
+                    "value_to_sell": None,
+                    "current_value": spy_current_value,
+                    "target_value": target_data.get("spy_target_value", 0),
+                    "current_price": spy_price
+                }
+            
+            # SPYM 리밸런싱 계산
+            spym_rebalancing = {}
+            if spym_target_shares is not None and spym_price is not None:
+                spym_shares_diff = spym_target_shares - spym_current_shares
+                spym_value_diff = spym_shares_diff * spym_price
+                spym_rebalancing = {
+                    "current_shares": spym_current_shares,
+                    "target_shares": spym_target_shares,
+                    "shares_to_buy": max(0, spym_shares_diff) if spym_shares_diff > 0 else 0,
+                    "shares_to_sell": abs(min(0, spym_shares_diff)) if spym_shares_diff < 0 else 0,
+                    "value_to_buy": max(0, spym_value_diff) if spym_value_diff > 0 else 0,
+                    "value_to_sell": abs(min(0, spym_value_diff)) if spym_value_diff < 0 else 0,
+                    "current_value": spym_current_value,
+                    "target_value": target_data.get("spym_target_value", 0),
+                    "current_price": spym_price
+                }
+            else:
+                spym_rebalancing = {
+                    "current_shares": spym_current_shares,
+                    "target_shares": None,
+                    "shares_to_buy": None,
+                    "shares_to_sell": None,
+                    "value_to_buy": None,
+                    "value_to_sell": None,
+                    "current_value": spym_current_value,
+                    "target_value": target_data.get("spym_target_value", 0),
+                    "current_price": spym_price
+                }
+            
+            # 합산 정보 저장
+            rebalancing["SPY+SPYM"] = {
+                "current_shares": None,  # 개별 주식 수는 별도로 관리
                 "target_shares": None,
                 "shares_to_buy": None,
                 "shares_to_sell": None,
-                "value_to_buy": None,
-                "value_to_sell": None,
-                "current_value": None,
-                "target_value": target_data["target_value"],
-                "current_price": None
+                "value_to_buy": (spy_rebalancing.get("value_to_buy", 0) or 0) + (spym_rebalancing.get("value_to_buy", 0) or 0),
+                "value_to_sell": (spy_rebalancing.get("value_to_sell", 0) or 0) + (spym_rebalancing.get("value_to_sell", 0) or 0),
+                "current_value": total_current_value,
+                "target_value": target_value,
+                "current_price": target_data.get("current_price"),
+                "spy": spy_rebalancing,
+                "spym": spym_rebalancing
             }
+        else:
+            # 일반 티커 처리
+            current_shares = current_holdings.get(ticker, 0)
+            target_shares_count = target_data["target_shares"]
+            price = target_data["current_price"]
+            
+            if target_shares_count is not None and price is not None:
+                shares_diff = target_shares_count - current_shares
+                value_diff = shares_diff * price
+                
+                rebalancing[ticker] = {
+                    "current_shares": current_shares,
+                    "target_shares": target_shares_count,
+                    "shares_to_buy": max(0, shares_diff) if shares_diff > 0 else 0,
+                    "shares_to_sell": abs(min(0, shares_diff)) if shares_diff < 0 else 0,
+                    "value_to_buy": max(0, value_diff) if value_diff > 0 else 0,
+                    "value_to_sell": abs(min(0, value_diff)) if value_diff < 0 else 0,
+                    "current_value": current_shares * price,
+                    "target_value": target_data["target_value"],
+                    "current_price": price
+                }
+            else:
+                rebalancing[ticker] = {
+                    "current_shares": current_holdings.get(ticker, 0),
+                    "target_shares": None,
+                    "shares_to_buy": None,
+                    "shares_to_sell": None,
+                    "value_to_buy": None,
+                    "value_to_sell": None,
+                    "current_value": None,
+                    "target_value": target_data["target_value"],
+                    "current_price": None
+                }
     
     return rebalancing
 
@@ -156,20 +318,75 @@ def display_portfolio_table(rebalancing):
     data = []
     
     for ticker, data_dict in rebalancing.items():
-        row = {
-            "티커": ticker,
-            "목표 비중": f"{PORTFOLIO[ticker]*100:.1f}%",
-            "현재 가격": f"${data_dict['current_price']:,.2f}" if data_dict['current_price'] else "N/A",
-            "목표 주식 수": f"{data_dict['target_shares']:.2f}" if data_dict['target_shares'] else "N/A",
-            "현재 보유 수": f"{data_dict['current_shares']:.2f}",
-            "구매 필요": f"{data_dict['shares_to_buy']:.2f}" if data_dict['shares_to_buy'] is not None else "N/A",
-            "매도 필요": f"{data_dict['shares_to_sell']:.2f}" if data_dict['shares_to_sell'] is not None else "N/A",
-            "목표 평가액": f"${data_dict['target_value']:,.2f}",
-            "현재 평가액": f"${data_dict['current_value']:,.2f}" if data_dict['current_value'] is not None else "N/A",
-            "구매 금액": f"${data_dict['value_to_buy']:,.2f}" if data_dict['value_to_buy'] is not None else "N/A",
-            "매도 금액": f"${data_dict['value_to_sell']:,.2f}" if data_dict['value_to_sell'] is not None else "N/A"
-        }
-        data.append(row)
+        # SPY+SPYM의 경우 SPY와 SPYM을 각각 표시
+        if ticker == "SPY+SPYM":
+            spy_data = data_dict.get("spy", {})
+            spym_data = data_dict.get("spym", {})
+            target_weight = PORTFOLIO[ticker] * 100
+            
+            # SPY 행
+            spy_row = {
+                "티커": "SPY",
+                "목표 비중": f"{target_weight/2:.1f}%",  # 각각 50%
+                "현재 가격": f"${spy_data.get('current_price', 0):,.2f}" if spy_data.get('current_price') else "N/A",
+                "목표 주식 수": f"{spy_data.get('target_shares', 0):.2f}" if spy_data.get('target_shares') is not None else "N/A",
+                "현재 보유 수": f"{spy_data.get('current_shares', 0):.2f}",
+                "구매 필요": f"{spy_data.get('shares_to_buy', 0):.2f}" if spy_data.get('shares_to_buy') is not None else "N/A",
+                "매도 필요": f"{spy_data.get('shares_to_sell', 0):.2f}" if spy_data.get('shares_to_sell') is not None else "N/A",
+                "목표 평가액": f"${spy_data.get('target_value', 0):,.2f}",
+                "현재 평가액": f"${spy_data.get('current_value', 0):,.2f}" if spy_data.get('current_value') is not None else "N/A",
+                "구매 금액": f"${spy_data.get('value_to_buy', 0):,.2f}" if spy_data.get('value_to_buy') is not None else "N/A",
+                "매도 금액": f"${spy_data.get('value_to_sell', 0):,.2f}" if spy_data.get('value_to_sell') is not None else "N/A"
+            }
+            data.append(spy_row)
+            
+            # SPYM 행
+            spym_row = {
+                "티커": "SPYM",
+                "목표 비중": f"{target_weight/2:.1f}%",  # 각각 50%
+                "현재 가격": f"${spym_data.get('current_price', 0):,.2f}" if spym_data.get('current_price') else "N/A",
+                "목표 주식 수": f"{spym_data.get('target_shares', 0):.2f}" if spym_data.get('target_shares') is not None else "N/A",
+                "현재 보유 수": f"{spym_data.get('current_shares', 0):.2f}",
+                "구매 필요": f"{spym_data.get('shares_to_buy', 0):.2f}" if spym_data.get('shares_to_buy') is not None else "N/A",
+                "매도 필요": f"{spym_data.get('shares_to_sell', 0):.2f}" if spym_data.get('shares_to_sell') is not None else "N/A",
+                "목표 평가액": f"${spym_data.get('target_value', 0):,.2f}",
+                "현재 평가액": f"${spym_data.get('current_value', 0):,.2f}" if spym_data.get('current_value') is not None else "N/A",
+                "구매 금액": f"${spym_data.get('value_to_buy', 0):,.2f}" if spym_data.get('value_to_buy') is not None else "N/A",
+                "매도 금액": f"${spym_data.get('value_to_sell', 0):,.2f}" if spym_data.get('value_to_sell') is not None else "N/A"
+            }
+            data.append(spym_row)
+            
+            # 합계 행 (선택적)
+            total_row = {
+                "티커": "SPY+SPYM 합계",
+                "목표 비중": f"{target_weight:.1f}%",
+                "현재 가격": "-",
+                "목표 주식 수": "-",
+                "현재 보유 수": "-",
+                "구매 필요": "-",
+                "매도 필요": "-",
+                "목표 평가액": f"${data_dict['target_value']:,.2f}",
+                "현재 평가액": f"${data_dict['current_value']:,.2f}" if data_dict['current_value'] is not None else "N/A",
+                "구매 금액": f"${data_dict['value_to_buy']:,.2f}" if data_dict['value_to_buy'] is not None else "N/A",
+                "매도 금액": f"${data_dict['value_to_sell']:,.2f}" if data_dict['value_to_sell'] is not None else "N/A"
+            }
+            data.append(total_row)
+        else:
+            # 일반 티커 처리
+            row = {
+                "티커": ticker,
+                "목표 비중": f"{PORTFOLIO[ticker]*100:.1f}%",
+                "현재 가격": f"${data_dict['current_price']:,.2f}" if data_dict['current_price'] else "N/A",
+                "목표 주식 수": f"{data_dict['target_shares']:.2f}" if data_dict['target_shares'] else "N/A",
+                "현재 보유 수": f"{data_dict['current_shares']:.2f}",
+                "구매 필요": f"{data_dict['shares_to_buy']:.2f}" if data_dict['shares_to_buy'] is not None else "N/A",
+                "매도 필요": f"{data_dict['shares_to_sell']:.2f}" if data_dict['shares_to_sell'] is not None else "N/A",
+                "목표 평가액": f"${data_dict['target_value']:,.2f}",
+                "현재 평가액": f"${data_dict['current_value']:,.2f}" if data_dict['current_value'] is not None else "N/A",
+                "구매 금액": f"${data_dict['value_to_buy']:,.2f}" if data_dict['value_to_buy'] is not None else "N/A",
+                "매도 금액": f"${data_dict['value_to_sell']:,.2f}" if data_dict['value_to_sell'] is not None else "N/A"
+            }
+            data.append(row)
     
     df = pd.DataFrame(data)
     return df
@@ -177,21 +394,39 @@ def display_portfolio_table(rebalancing):
 
 # ==== 백테스트 함수들 ====
 
+def convert_portfolio_for_backtest(portfolio_weights):
+    """
+    백테스트용 포트폴리오 변환 (SPY+SPYM을 SPY와 SPYM으로 분리)
+    """
+    backtest_weights = {}
+    for ticker, weight in portfolio_weights.items():
+        if ticker == "SPY+SPYM":
+            # SPY와 SPYM을 각각 50%씩 분배
+            backtest_weights["SPY"] = weight / 2
+            backtest_weights["SPYM"] = weight / 2
+        else:
+            backtest_weights[ticker] = weight
+    return backtest_weights
+
+
 def get_latest_listing_date(portfolio_weights):
     """
     각 티커의 첫 거래일을 확인하고 가장 늦은 날짜를 반환
     """
     listing_dates = {}
     
+    # 백테스트용 포트폴리오로 변환 (SPY+SPYM 분리)
+    backtest_weights = convert_portfolio_for_backtest(portfolio_weights)
+    
     # 티커 변환 (BRK-B -> BRK.B for yfinance)
     ticker_mapping = {}
-    for ticker in portfolio_weights.keys():
+    for ticker in backtest_weights.keys():
         if ticker == "BRK-B":
             ticker_mapping["BRK.B"] = "BRK-B"
         else:
             ticker_mapping[ticker] = ticker
     
-    for ticker in portfolio_weights.keys():
+    for ticker in backtest_weights.keys():
         try:
             # yfinance 티커 변환 (BRK-B는 여러 형식 시도)
             if ticker == "BRK-B":
@@ -235,11 +470,14 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
     if end_date is None:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
+    # 백테스트용 포트폴리오로 변환 (SPY+SPYM 분리)
+    backtest_weights = convert_portfolio_for_backtest(portfolio_weights)
+    
     # 티커 변환 및 개별 다운로드 (BRK-B는 BRK.B로 시도)
     ticker_data_frames = []
     ticker_mapping = {}
     
-    for ticker in portfolio_weights.keys():
+    for ticker in backtest_weights.keys():
         if ticker == "BRK-B":
             # BRK-B는 BRK.B로 시도
             yf_tickers = ["BRK.B", "BRK-B"]
@@ -289,22 +527,22 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
     
     # 사용 가능한 티커 확인 (NaN이 모두가 아닌 티커)
     available_tickers = []
-    for t in portfolio_weights.keys():
+    for t in backtest_weights.keys():
         if t in data.columns:
             # 해당 티커의 데이터가 있는 행이 하나라도 있으면 사용 가능
             if not data[t].isna().all():
                 available_tickers.append(t)
     
     if len(available_tickers) == 0:
-        st.error(f"사용 가능한 티커 데이터가 없습니다. 다운로드된 컬럼: {list(data.columns)}, 요청한 티커: {list(portfolio_weights.keys())}")
+        st.error(f"사용 가능한 티커 데이터가 없습니다. 다운로드된 컬럼: {list(data.columns)}, 요청한 티커: {list(backtest_weights.keys())}")
         return None, None, None
     
-    if len(available_tickers) < len(portfolio_weights):
-        missing = [t for t in portfolio_weights.keys() if t not in available_tickers]
+    if len(available_tickers) < len(backtest_weights):
+        missing = [t for t in backtest_weights.keys() if t not in available_tickers]
         st.warning(f"일부 티커 데이터가 없습니다: {', '.join(missing)}. 사용 가능한 티커만으로 백테스트를 진행합니다.")
     
     # 사용 가능한 티커만으로 가중치 재조정
-    available_weights = {t: portfolio_weights[t] for t in available_tickers}
+    available_weights = {t: backtest_weights[t] for t in available_tickers}
     total_weight = sum(available_weights.values())
     if total_weight > 0:
         available_weights = {t: w / total_weight for t, w in available_weights.items()}
@@ -632,15 +870,36 @@ with st.sidebar:
     
     current_holdings = {}
     for ticker in PORTFOLIO.keys():
-        current_holdings[ticker] = st.number_input(
-            f"{ticker} 보유 수량",
-            min_value=0.0,
-            value=0.0,
-            step=0.01,
-            format="%.2f",
-            key=f"holding_{ticker}",
-            on_change=lambda: st.session_state.update({'auto_calc_trigger': True}) if auto_calculate else None
-        )
+        if ticker == "SPY+SPYM":
+            # SPY와 SPYM을 각각 입력받음
+            current_holdings["SPY"] = st.number_input(
+                f"SPY 보유 수량",
+                min_value=0.0,
+                value=0.0,
+                step=0.01,
+                format="%.2f",
+                key=f"holding_SPY",
+                on_change=lambda: st.session_state.update({'auto_calc_trigger': True}) if auto_calculate else None
+            )
+            current_holdings["SPYM"] = st.number_input(
+                f"SPYM 보유 수량",
+                min_value=0.0,
+                value=0.0,
+                step=0.01,
+                format="%.2f",
+                key=f"holding_SPYM",
+                on_change=lambda: st.session_state.update({'auto_calc_trigger': True}) if auto_calculate else None
+            )
+        else:
+            current_holdings[ticker] = st.number_input(
+                f"{ticker} 보유 수량",
+                min_value=0.0,
+                value=0.0,
+                step=0.01,
+                format="%.2f",
+                key=f"holding_{ticker}",
+                on_change=lambda: st.session_state.update({'auto_calc_trigger': True}) if auto_calculate else None
+            )
     
     st.markdown("---")
     
@@ -757,8 +1016,13 @@ if st.session_state.get('calculate', False):
         weight_diff = current_weight - target_weight
         abs_weight_diff = abs(weight_diff)
         
+        # SPY+SPYM의 경우 티커명을 "SPY+SPYM"으로 표시
+        display_ticker = ticker
+        if ticker == "SPY+SPYM":
+            display_ticker = "SPY+SPYM"
+        
         comparison_data.append({
-            "티커": ticker,
+            "티커": display_ticker,
             "목표 비중": f"{target_weight:.1f}%",
             "현재 비중": f"{current_weight:.1f}%" if current_value else "0.0%",
             "편차": f"{weight_diff:+.1f}%",
@@ -767,7 +1031,7 @@ if st.session_state.get('calculate', False):
         
         # 우선순위용 데이터 (편차가 큰 순서)
         priority_data.append({
-            "티커": ticker,
+            "티커": display_ticker,
             "목표 비중": target_weight,
             "현재 비중": current_weight,
             "편차": weight_diff,
@@ -879,20 +1143,58 @@ if st.session_state.get('calculate', False):
     
     needs_rebalancing = []
     for ticker, data in rebalancing.items():
-        if data["shares_to_buy"] and data["shares_to_buy"] > 0.01:
-            needs_rebalancing.append({
-                "티커": ticker,
-                "액션": "구매",
-                "수량": f"{data['shares_to_buy']:.2f}",
-                "금액": f"${data['value_to_buy']:,.2f}"
-            })
-        if data["shares_to_sell"] and data["shares_to_sell"] > 0.01:
-            needs_rebalancing.append({
-                "티커": ticker,
-                "액션": "매도",
-                "수량": f"{data['shares_to_sell']:.2f}",
-                "금액": f"${data['value_to_sell']:,.2f}"
-            })
+        # SPY+SPYM의 경우 SPY와 SPYM을 각각 처리
+        if ticker == "SPY+SPYM":
+            spy_data = data.get("spy", {})
+            spym_data = data.get("spym", {})
+            
+            # SPY 처리
+            if spy_data.get("shares_to_buy") and spy_data["shares_to_buy"] > 0.01:
+                needs_rebalancing.append({
+                    "티커": "SPY",
+                    "액션": "구매",
+                    "수량": f"{spy_data['shares_to_buy']:.2f}",
+                    "금액": f"${spy_data['value_to_buy']:,.2f}"
+                })
+            if spy_data.get("shares_to_sell") and spy_data["shares_to_sell"] > 0.01:
+                needs_rebalancing.append({
+                    "티커": "SPY",
+                    "액션": "매도",
+                    "수량": f"{spy_data['shares_to_sell']:.2f}",
+                    "금액": f"${spy_data['value_to_sell']:,.2f}"
+                })
+            
+            # SPYM 처리
+            if spym_data.get("shares_to_buy") and spym_data["shares_to_buy"] > 0.01:
+                needs_rebalancing.append({
+                    "티커": "SPYM",
+                    "액션": "구매",
+                    "수량": f"{spym_data['shares_to_buy']:.2f}",
+                    "금액": f"${spym_data['value_to_buy']:,.2f}"
+                })
+            if spym_data.get("shares_to_sell") and spym_data["shares_to_sell"] > 0.01:
+                needs_rebalancing.append({
+                    "티커": "SPYM",
+                    "액션": "매도",
+                    "수량": f"{spym_data['shares_to_sell']:.2f}",
+                    "금액": f"${spym_data['value_to_sell']:,.2f}"
+                })
+        else:
+            # 일반 티커 처리
+            if data.get("shares_to_buy") and data["shares_to_buy"] > 0.01:
+                needs_rebalancing.append({
+                    "티커": ticker,
+                    "액션": "구매",
+                    "수량": f"{data['shares_to_buy']:.2f}",
+                    "금액": f"${data['value_to_buy']:,.2f}"
+                })
+            if data.get("shares_to_sell") and data["shares_to_sell"] > 0.01:
+                needs_rebalancing.append({
+                    "티커": ticker,
+                    "액션": "매도",
+                    "수량": f"{data['shares_to_sell']:.2f}",
+                    "금액": f"${data['value_to_sell']:,.2f}"
+                })
     
     if needs_rebalancing:
         rebalancing_df = pd.DataFrame(needs_rebalancing)
@@ -1201,7 +1503,7 @@ else:
     
     **포트폴리오 구성:**
     - QQQM: 15%
-    - SPY: 20%
+    - SPY+SPYM: 20% (SPY와 SPYM 합산)
     - JEPQ: 10%
     - BRK-B: 15%
     - IEF: 15%
