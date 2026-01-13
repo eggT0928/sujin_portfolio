@@ -261,7 +261,7 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
                 "value_to_buy": (spy_rebalancing.get("value_to_buy", 0) or 0) + (spym_rebalancing.get("value_to_buy", 0) or 0),
                 "value_to_sell": (spy_rebalancing.get("value_to_sell", 0) or 0) + (spym_rebalancing.get("value_to_sell", 0) or 0),
                 "current_value": total_current_value,
-                "target_value": target_value,
+                "target_value": target_total_value,
                 "current_price": target_data.get("current_price"),
                 "spy": spy_rebalancing,
                 "spym": spym_rebalancing
