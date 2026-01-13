@@ -94,71 +94,32 @@ def calculate_target_shares(total_balance, prices):
     """목표 주식 수 계산"""
     target_shares = {}
     for ticker, allocation in PORTFOLIO.items():
-        # SPY+SPYM의 경우 특별 처리
+        # SPY+SPYM의 경우 특별 처리 - 목표 총 가치만 계산 (개별 목표 주식 수는 나중에 현재 보유 비중 기준으로 계산)
         if ticker == "SPY+SPYM":
             spy_price = prices.get("SPY")
             spym_price = prices.get("SPYM")
             target_value = total_balance * allocation
             
-            # 두 가격이 모두 있으면 평균 가격으로 계산 (또는 각각 50%씩 분배)
+            # 평균 가격 계산 (표시용)
+            avg_price = None
             if spy_price and spy_price > 0 and spym_price and spym_price > 0:
-                # 목표 가치를 두 티커에 50:50으로 분배
-                spy_target_value = target_value / 2
-                spym_target_value = target_value / 2
-                spy_shares = spy_target_value / spy_price
-                spym_shares = spym_target_value / spym_price
-                
-                target_shares["SPY+SPYM"] = {
-                    "target_value": target_value,
-                    "target_shares": None,  # 개별 주식 수는 별도로 관리
-                    "current_price": (spy_price + spym_price) / 2,  # 평균 가격
-                    "spy_target_value": spy_target_value,
-                    "spy_target_shares": spy_shares,
-                    "spy_price": spy_price,
-                    "spym_target_value": spym_target_value,
-                    "spym_target_shares": spym_shares,
-                    "spym_price": spym_price
-                }
+                avg_price = (spy_price + spym_price) / 2
             elif spy_price and spy_price > 0:
-                # SPY만 있는 경우
-                spy_shares = target_value / spy_price
-                target_shares["SPY+SPYM"] = {
-                    "target_value": target_value,
-                    "target_shares": None,
-                    "current_price": spy_price,
-                    "spy_target_value": target_value,
-                    "spy_target_shares": spy_shares,
-                    "spy_price": spy_price,
-                    "spym_target_value": 0,
-                    "spym_target_shares": 0,
-                    "spym_price": None
-                }
+                avg_price = spy_price
             elif spym_price and spym_price > 0:
-                # SPYM만 있는 경우
-                spym_shares = target_value / spym_price
-                target_shares["SPY+SPYM"] = {
-                    "target_value": target_value,
-                    "target_shares": None,
-                    "current_price": spym_price,
-                    "spy_target_value": 0,
-                    "spy_target_shares": 0,
-                    "spy_price": None,
-                    "spym_target_value": target_value,
-                    "spym_target_shares": spym_shares,
-                    "spym_price": spym_price
-                }
-            else:
-                target_shares["SPY+SPYM"] = {
-                    "target_value": target_value,
-                    "target_shares": None,
-                    "current_price": None,
-                    "spy_target_value": target_value / 2,
-                    "spy_target_shares": None,
-                    "spy_price": None,
-                    "spym_target_value": target_value / 2,
-                    "spym_target_shares": None,
-                    "spym_price": None
-                }
+                avg_price = spym_price
+            
+            target_shares["SPY+SPYM"] = {
+                "target_value": target_value,  # 목표 총 가치 (SPY + SPYM 합산)
+                "target_shares": None,  # 개별 주식 수는 현재 보유 비중 기준으로 나중에 계산
+                "current_price": avg_price,
+                "spy_target_value": None,  # 나중에 현재 보유 비중 기준으로 계산
+                "spy_target_shares": None,  # 나중에 현재 보유 비중 기준으로 계산
+                "spy_price": spy_price,
+                "spym_target_value": None,  # 나중에 현재 보유 비중 기준으로 계산
+                "spym_target_shares": None,  # 나중에 현재 보유 비중 기준으로 계산
+                "spym_price": spym_price
+            }
         else:
             # 일반 티커 처리
             yf_ticker = ticker
@@ -193,21 +154,50 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
             
             spy_price = target_data.get("spy_price")
             spym_price = target_data.get("spym_price")
-            spy_target_shares = target_data.get("spy_target_shares")
-            spym_target_shares = target_data.get("spym_target_shares")
             
-            # 현재 가치 계산
-            spy_current_value = spy_current_shares * spy_price if spy_price else 0
-            spym_current_value = spym_current_shares * spym_price if spym_price else 0
+            # 현재 가치 계산 (사용자가 입력한 보유 수량 기준)
+            spy_current_value = spy_current_shares * spy_price if spy_price and spy_price > 0 else 0
+            spym_current_value = spym_current_shares * spym_price if spym_price and spym_price > 0 else 0
             total_current_value = spy_current_value + spym_current_value
             
-            # 목표 가치
-            target_value = target_data["target_value"]
+            # 목표 총 가치 (SPY + SPYM 합산)
+            target_total_value = target_data["target_value"]
+            
+            # 차이 계산
+            value_diff = target_total_value - total_current_value
+            
+            # 현재 비중 계산 (현재 보유 비중 기준으로 차이를 분배)
+            spy_weight = 0.5  # 기본값: 50:50
+            spym_weight = 0.5
+            
+            if total_current_value > 0:
+                # 현재 보유 비중으로 분배
+                spy_weight = spy_current_value / total_current_value
+                spym_weight = spym_current_value / total_current_value
+            elif spy_price and spy_price > 0 and spym_price and spym_price > 0:
+                # 현재 보유가 없으면 가격 비중으로 분배
+                total_price = spy_price + spym_price
+                spy_weight = spy_price / total_price
+                spym_weight = spym_price / total_price
+            elif spy_price and spy_price > 0:
+                spy_weight = 1.0
+                spym_weight = 0.0
+            elif spym_price and spym_price > 0:
+                spy_weight = 0.0
+                spym_weight = 1.0
+            
+            # 목표 가치를 현재 비중에 맞춰 분배
+            spy_target_value = target_total_value * spy_weight
+            spym_target_value = target_total_value * spym_weight
+            
+            # 목표 주식 수 계산
+            spy_target_shares = spy_target_value / spy_price if spy_price and spy_price > 0 else None
+            spym_target_shares = spym_target_value / spym_price if spym_price and spym_price > 0 else None
             
             # SPY 리밸런싱 계산
             spy_rebalancing = {}
-            if spy_target_shares is not None and spy_price is not None:
-                spy_shares_diff = spy_target_shares - spy_current_shares
+            if spy_price and spy_price > 0:
+                spy_shares_diff = (spy_target_shares - spy_current_shares) if spy_target_shares is not None else 0
                 spy_value_diff = spy_shares_diff * spy_price
                 spy_rebalancing = {
                     "current_shares": spy_current_shares,
@@ -217,7 +207,7 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
                     "value_to_buy": max(0, spy_value_diff) if spy_value_diff > 0 else 0,
                     "value_to_sell": abs(min(0, spy_value_diff)) if spy_value_diff < 0 else 0,
                     "current_value": spy_current_value,
-                    "target_value": target_data.get("spy_target_value", 0),
+                    "target_value": spy_target_value,
                     "current_price": spy_price
                 }
             else:
@@ -229,14 +219,14 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
                     "value_to_buy": None,
                     "value_to_sell": None,
                     "current_value": spy_current_value,
-                    "target_value": target_data.get("spy_target_value", 0),
+                    "target_value": spy_target_value,
                     "current_price": spy_price
                 }
             
             # SPYM 리밸런싱 계산
             spym_rebalancing = {}
-            if spym_target_shares is not None and spym_price is not None:
-                spym_shares_diff = spym_target_shares - spym_current_shares
+            if spym_price and spym_price > 0:
+                spym_shares_diff = (spym_target_shares - spym_current_shares) if spym_target_shares is not None else 0
                 spym_value_diff = spym_shares_diff * spym_price
                 spym_rebalancing = {
                     "current_shares": spym_current_shares,
@@ -246,7 +236,7 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
                     "value_to_buy": max(0, spym_value_diff) if spym_value_diff > 0 else 0,
                     "value_to_sell": abs(min(0, spym_value_diff)) if spym_value_diff < 0 else 0,
                     "current_value": spym_current_value,
-                    "target_value": target_data.get("spym_target_value", 0),
+                    "target_value": spym_target_value,
                     "current_price": spym_price
                 }
             else:
@@ -258,7 +248,7 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
                     "value_to_buy": None,
                     "value_to_sell": None,
                     "current_value": spym_current_value,
-                    "target_value": target_data.get("spym_target_value", 0),
+                    "target_value": spym_target_value,
                     "current_price": spym_price
                 }
             
@@ -313,7 +303,7 @@ def calculate_rebalancing(target_shares, current_holdings, prices):
     return rebalancing
 
 
-def display_portfolio_table(rebalancing):
+def display_portfolio_table(rebalancing, total_balance=0):
     """포트폴리오 테이블 표시"""
     data = []
     
@@ -322,12 +312,16 @@ def display_portfolio_table(rebalancing):
         if ticker == "SPY+SPYM":
             spy_data = data_dict.get("spy", {})
             spym_data = data_dict.get("spym", {})
-            target_weight = PORTFOLIO[ticker] * 100
+            target_weight = PORTFOLIO[ticker] * 100  # 합산 목표 비중 20%
+            
+            # SPY 목표 비중 계산 (목표 가치 기준)
+            spy_target_value = spy_data.get("target_value", 0) or 0
+            spy_target_weight = (spy_target_value / total_balance * 100) if total_balance > 0 else 0
             
             # SPY 행
             spy_row = {
                 "티커": "SPY",
-                "목표 비중": f"{target_weight/2:.1f}%",  # 각각 50%
+                "목표 비중": f"{spy_target_weight:.1f}%",  # 목표 가치 기준 비중
                 "현재 가격": f"${spy_data.get('current_price', 0):,.2f}" if spy_data.get('current_price') else "N/A",
                 "목표 주식 수": f"{spy_data.get('target_shares', 0):.2f}" if spy_data.get('target_shares') is not None else "N/A",
                 "현재 보유 수": f"{spy_data.get('current_shares', 0):.2f}",
@@ -340,10 +334,14 @@ def display_portfolio_table(rebalancing):
             }
             data.append(spy_row)
             
+            # SPYM 목표 비중 계산 (목표 가치 기준)
+            spym_target_value = spym_data.get("target_value", 0) or 0
+            spym_target_weight = (spym_target_value / total_balance * 100) if total_balance > 0 else 0
+            
             # SPYM 행
             spym_row = {
                 "티커": "SPYM",
-                "목표 비중": f"{target_weight/2:.1f}%",  # 각각 50%
+                "목표 비중": f"{spym_target_weight:.1f}%",  # 목표 가치 기준 비중
                 "현재 가격": f"${spym_data.get('current_price', 0):,.2f}" if spym_data.get('current_price') else "N/A",
                 "목표 주식 수": f"{spym_data.get('target_shares', 0):.2f}" if spym_data.get('target_shares') is not None else "N/A",
                 "현재 보유 수": f"{spym_data.get('current_shares', 0):.2f}",
@@ -1125,7 +1123,7 @@ if st.session_state.get('calculate', False):
     
     # 상세 테이블
     st.subheader("📊 상세 리밸런싱 정보")
-    df = display_portfolio_table(rebalancing)
+    df = display_portfolio_table(rebalancing, total_balance)
     st.dataframe(df, use_container_width=True, hide_index=True)
     
     # CSV 다운로드
