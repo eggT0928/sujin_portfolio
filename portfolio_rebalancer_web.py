@@ -525,7 +525,7 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
         available_weights = {t: w / total_weight for t, w in available_weights.items()}
     
     # 월별 리밸런싱 (사용 가능한 티커만)
-    monthly_data = data[available_tickers].resample("M").last()
+    monthly_data = data[available_tickers].resample("ME").last()
     
     # NaN이 있는 행 제거 (모든 티커가 NaN인 경우만)
     monthly_data = monthly_data.dropna(how='all')
