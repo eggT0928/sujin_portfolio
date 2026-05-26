@@ -568,13 +568,18 @@ def run_portfolio_backtest(portfolio_weights, start_date="2020-01-01", end_date=
 
 def get_risk_free_rate(start_date: str = None, end_date: str = None):
     """
-    무위험 수익률 조회 (미국 10년 국채 수익률)
+    무위험 수익률 조회 (미국 13주/3개월 T-Bill 수익률, ^IRX)
     start_date와 end_date가 제공되면 해당 기간의 평균을 사용,
-    없으면 최근 1개월 값을 사용
+    없으면 최근 1개월 값을 사용합니다.
+
+    참고:
+    - ^IRX는 Yahoo Finance에서 제공하는 13 Week Treasury Bill Yield입니다.
+    - 값은 보통 % 단위로 제공되므로 100으로 나누어 소수 형태로 변환합니다.
+    - 샤프지수 계산용 무위험 수익률로는 10년 국채(^TNX)보다 단기국채(^IRX)가 더 일반적입니다.
     """
     try:
-        # 미국 10년 국채 수익률 조회 (^TNX)
-        ticker = yf.Ticker("^TNX")
+        # 미국 13주/3개월 T-Bill 수익률 조회 (^IRX)
+        ticker = yf.Ticker("^IRX")
         
         if start_date and end_date:
             # 백테스트 기간 전체의 평균 사용
@@ -584,15 +589,16 @@ def get_risk_free_rate(start_date: str = None, end_date: str = None):
                 avg_rate = hist["Close"].mean() / 100.0
                 return avg_rate
         else:
-            # 최근 1개월 값 사용 (기존 방식)
+            # 최근 1개월 값 사용
             hist = ticker.history(period="1mo")
             if not hist.empty:
                 current_rate = hist["Close"].iloc[-1] / 100.0
                 return current_rate
-    except:
+    except Exception as e:
+        # 조회 실패 시 아래 기본값 사용
         pass
     
-    # 조회 실패 시 보수적인 기본값 사용 (최근 10년 국채 평균 약 2.5%)
+    # 조회 실패 시 보수적인 기본값 사용
     return 0.025
 
 
@@ -1273,7 +1279,7 @@ if st.session_state.get('calculate', False):
                 st.metric("총 수익률", f"{results['metrics']['총 수익률']:.2f}%")
             with col6:
                 if '무위험 수익률' in results['metrics']:
-                    st.metric("무위험 수익률", f"{results['metrics']['무위험 수익률']:.2f}%")
+                    st.metric("무위험 수익률(^IRX)", f"{results['metrics']['무위험 수익률']:.2f}%")
             
             # 기간 정보
             st.caption(f"기간: {results['metrics']['시작일']} ~ {results['metrics']['종료일']} ({results['metrics']['기간(년)']:.2f}년)")
